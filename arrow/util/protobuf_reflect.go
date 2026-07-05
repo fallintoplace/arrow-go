@@ -64,14 +64,15 @@ type ProtobufFieldReflection struct {
 }
 
 func (pfr *ProtobufFieldReflection) isNull() bool {
-	for pfr.rValue.Kind() == reflect.Ptr {
-		if pfr.rValue.IsNil() {
+	v := pfr.rValue
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
 			return true
 		}
-		pfr.rValue = pfr.rValue.Elem()
+		v = v.Elem()
 	}
 
-	if !pfr.rValue.IsValid() || !pfr.prValue.IsValid() {
+	if !v.IsValid() || !pfr.prValue.IsValid() {
 		return true
 	}
 	return false

@@ -19,6 +19,7 @@ package util
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -482,6 +483,16 @@ func (tpr testProtobufReflection) isNull() bool {
 	return false
 }
 
+func findMessageField(t *testing.T, pmr *ProtobufMessageReflection, name string) *ProtobufMessageFieldReflection {
+	for i := range pmr.fields {
+		if pmr.fields[i].name() == name {
+			return &pmr.fields[i]
+		}
+	}
+	require.Fail(t, "field not found", "field name: "+name)
+	return nil
+}
+
 func TestAppendValueOrNull(t *testing.T) {
 	unsupportedField := arrow.Field{Name: "Test", Type: arrow.FixedWidthTypes.Time32s}
 	schema := arrow.NewSchema([]arrow.Field{unsupportedField}, nil)
@@ -494,4 +505,31 @@ func TestAppendValueOrNull(t *testing.T) {
 	got := pmfr.AppendValueOrNull(recordBuilder.Field(0), mem)
 	want := "not able to appendValueOrNull for type TIME32"
 	assert.EqualErrorf(t, got, want, "Error is: %v, want: %v", got, want)
+}
+
+func TestIsNullDoesNotMutateReflectionState(t *testing.T) {
+	exampleMsg := util_message.ExampleMessage{Field1: "Example"}
+	msg := util_message.AllTheTypesNoAny{Message: &exampleMsg}
+
+	pmr := NewProtobufMessageReflection(&msg)
+	reference := NewProtobufMessageReflection(&msg)
+	field := findMessageField(t, pmr, "message")
+	referenceField := findMessageField(t, reference, "message")
+	referenceRecord := reference.Record(nil)
+
+	field.prValue = referenceField.prValue
+	field.rValue = reflect.ValueOf(msg.Message)
+	referenceField.rValue = reflect.ValueOf(msg.Message)
+
+	for i := 0; i < 3; i++ {
+		assert.False(t, field.isNull())
+	}
+	record := pmr.Record(nil)
+
+	referenceJSON, err := json.Marshal(referenceRecord)
+	require.NoError(t, err)
+	recordedJSON, err := json.Marshal(record)
+	require.NoError(t, err)
+
+	assert.JSONEq(t, string(referenceJSON), string(recordedJSON))
 }

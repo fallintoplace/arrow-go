@@ -18,6 +18,7 @@ package array
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -191,10 +192,21 @@ func (d *Data) SetDictionary(dict arrow.ArrayData) {
 		d.dictionary.Release()
 		d.dictionary = nil
 	}
-	if dict.(*Data) != nil {
-		dict.Retain()
-		d.dictionary = dict.(*Data)
+
+	if dict == nil {
+		return
 	}
+
+	dd, ok := dict.(*Data)
+	if !ok {
+		panic(fmt.Sprintf("arrow/array: invalid dictionary type: %T", dict))
+	}
+	if dd == nil {
+		return
+	}
+
+	dd.Retain()
+	d.dictionary = dd
 }
 
 // SizeInBytes returns the size of the Data and any children and/or dictionary in bytes by

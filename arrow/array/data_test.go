@@ -52,6 +52,64 @@ func TestDataReset(t *testing.T) {
 	}
 }
 
+type nonDataArrayData struct{}
+
+func (nonDataArrayData) Retain()                     {}
+func (nonDataArrayData) Release()                    {}
+func (nonDataArrayData) DataType() arrow.DataType    { return arrow.Null }
+func (nonDataArrayData) NullN() int                  { return 0 }
+func (nonDataArrayData) Len() int                    { return 0 }
+func (nonDataArrayData) Offset() int                 { return 0 }
+func (nonDataArrayData) Buffers() []*memory.Buffer   { return nil }
+func (nonDataArrayData) Children() []arrow.ArrayData { return nil }
+func (nonDataArrayData) Reset(arrow.DataType, int, []*memory.Buffer, []arrow.ArrayData, int, int) {
+}
+func (nonDataArrayData) Dictionary() arrow.ArrayData { return nil }
+func (nonDataArrayData) SizeInBytes() uint64         { return 0 }
+
+func TestDataSetDictionaryNil(t *testing.T) {
+	data := NewData(&arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8,
+		ValueType: arrow.PrimitiveTypes.Int32,
+	}, 0, []*memory.Buffer{nil, nil}, nil, 0, 0)
+	data.SetDictionary(nil)
+
+	assert.Nil(t, data.Dictionary())
+
+	data.Release()
+}
+
+func TestDataSetDictionaryTypedNil(t *testing.T) {
+	dict := NewData(arrow.PrimitiveTypes.Int32, 0, []*memory.Buffer{nil, nil}, nil, 0, 0)
+	data := NewData(&arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8,
+		ValueType: arrow.PrimitiveTypes.Int32,
+	}, 0, []*memory.Buffer{nil, nil}, nil, 0, 0)
+
+	data.SetDictionary(dict)
+	assert.NotNil(t, data.Dictionary())
+
+	var nilDict *Data
+	data.SetDictionary(nilDict)
+
+	assert.Nil(t, data.Dictionary())
+
+	dict.Release()
+	data.Release()
+}
+
+func TestDataSetDictionaryWrongTypePanics(t *testing.T) {
+	data := NewData(&arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8,
+		ValueType: arrow.PrimitiveTypes.Int32,
+	}, 0, []*memory.Buffer{nil, nil}, nil, 0, 0)
+	defer data.Release()
+
+	assert.PanicsWithValue(t, "arrow/array: invalid dictionary type: array.nonDataArrayData", func() {
+		data.SetDictionary(nonDataArrayData{})
+	})
+}
+
 func TestNewSliceDataInvalidBounds(t *testing.T) {
 	data := NewData(&arrow.Int64Type{}, 3, nil, nil, 0, 0)
 	defer data.Release()

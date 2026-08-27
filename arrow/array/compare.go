@@ -21,6 +21,7 @@ import (
 	"math"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 )
@@ -663,17 +664,34 @@ func baseArrayEqual(left, right arrow.Array) bool {
 }
 
 func validityBitmapEqual(left, right arrow.Array) bool {
-	// TODO(alexandreyc): make it faster by comparing byte slices of the validity bitmap?
 	n := left.Len()
 	if n != right.Len() {
 		return false
 	}
-	for i := 0; i < n; i++ {
-		if left.IsNull(i) != right.IsNull(i) {
-			return false
-		}
+	if n == 0 {
+		return true
 	}
-	return true
+
+	leftBitmap := left.NullBitmapBytes()
+	rightBitmap := right.NullBitmapBytes()
+	leftOffset := left.Data().Offset()
+	rightOffset := right.Data().Offset()
+	switch {
+	case len(leftBitmap) == 0 && len(rightBitmap) == 0:
+		// A missing validity bitmap means that every value is valid.
+		return true
+	case len(leftBitmap) == 0:
+		// Keep the result independent of the null count metadata in case a
+		// caller provides an all-valid bitmap alongside a missing bitmap.
+		return bitutil.CountSetBits(rightBitmap, rightOffset, n) == n
+	case len(rightBitmap) == 0:
+		return bitutil.CountSetBits(leftBitmap, leftOffset, n) == n
+	default:
+		return bitutil.BitmapEquals(
+			leftBitmap, rightBitmap,
+			int64(leftOffset), int64(rightOffset), int64(n),
+		)
+	}
 }
 
 func arrayApproxEqualString(left, right *String) bool {

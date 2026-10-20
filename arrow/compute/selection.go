@@ -836,7 +836,7 @@ func FilterTable(ctx context.Context, tbl arrow.Table, filter Datum, opts *Filte
 	defer cancel()
 
 	eg, cctx := errgroup.WithContext(ctx)
-	eg.SetLimit(GetExecCtx(cctx).NumParallel)
+	eg.SetLimit(max(1, GetExecCtx(cctx).NumParallel))
 
 	var filterSpan exec.ArraySpan
 	for i, filterChunk := range inputs[nCols] {

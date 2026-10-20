@@ -88,11 +88,23 @@ func SetBitTo(buf []byte, i int, val bool) {
 
 // CountSetBits counts the number of 1's in buf up to n bits.
 func CountSetBits(buf []byte, offset, n int) int {
-	if offset > 0 {
-		return countSetBitsWithOffset(buf, offset, n)
-	}
-
 	count := 0
+	if offset > 0 {
+		if n == 0 {
+			return 0
+		}
+
+		// Only the first byte can be unaligned. Count its selected bits
+		// in one operation instead of examining up to 63 bits individually.
+		if bitOffset := offset & 7; bitOffset != 0 {
+			leading := min(n, 8-bitOffset)
+			mask := byte((1<<leading)-1) << bitOffset
+			count += bits.OnesCount8(buf[offset/8] & mask)
+			offset += leading
+			n -= leading
+		}
+		buf = buf[offset/8:]
+	}
 
 	uint64Bytes := n / uint64SizeBits * 8
 	for _, v := range bytesToUint64(buf[:uint64Bytes]) {
@@ -165,27 +177,6 @@ func BitmapAllSet(buf []byte, offset, n int) bool {
 		return buf[end]&mask == mask
 	}
 	return true
-}
-
-func countSetBitsWithOffset(buf []byte, offset, n int) int {
-	count := 0
-
-	beg := offset
-	begU8 := roundUp(beg, uint64SizeBits)
-
-	init := min(n, begU8-beg)
-	for i := offset; i < beg+init; i++ {
-		if BitIsSet(buf, i) {
-			count++
-		}
-	}
-
-	begU64 := BytesForBits(int64(beg + init))
-	return count + CountSetBits(buf[begU64:], 0, n-init)
-}
-
-func roundUp(v, f int) int {
-	return (v + (f - 1)) / f * f
 }
 
 func min(a, b int) int {

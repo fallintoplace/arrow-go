@@ -106,11 +106,12 @@ func (rs *simpleRecords) RecordBatch() arrow.RecordBatch { return rs.cur }
 // Deprecated: Use [RecordBatch] instead.
 func (rs *simpleRecords) Record() arrow.RecordBatch { return rs.RecordBatch() }
 func (rs *simpleRecords) Next() bool {
-	if len(rs.recs) == 0 {
-		return false
-	}
 	if rs.cur != nil {
 		rs.cur.Release()
+		rs.cur = nil
+	}
+	if len(rs.recs) == 0 {
+		return false
 	}
 	rs.cur = rs.recs[0]
 	rs.recs = rs.recs[1:]

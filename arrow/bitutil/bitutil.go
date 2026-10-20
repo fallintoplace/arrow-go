@@ -168,24 +168,34 @@ func BitmapAllSet(buf []byte, offset, n int) bool {
 }
 
 func countSetBitsWithOffset(buf []byte, offset, n int) int {
-	count := 0
-
-	beg := offset
-	begU8 := roundUp(beg, uint64SizeBits)
-
-	init := min(n, begU8-beg)
-	for i := offset; i < beg+init; i++ {
-		if BitIsSet(buf, i) {
-			count++
-		}
+	if n == 0 {
+		return 0
 	}
 
-	begU64 := BytesForBits(int64(beg + init))
-	return count + CountSetBits(buf[begU64:], 0, n-init)
-}
+	// Keep the bulk scan aligned on a 64-bit boundary, but count the
+	// leading bits with one masked word instead of testing each bit.
+	leading := min(n, uint64SizeBits-offset%uint64SizeBits)
+	if offset%uint64SizeBits == 0 {
+		return CountSetBits(buf[offset/8:], 0, n)
+	}
 
-func roundUp(v, f int) int {
-	return (v + (f - 1)) / f * f
+	wordByte := offset / uint64SizeBits * uint64SizeBytes
+	if len(buf)-wordByte >= uint64SizeBytes {
+		word := binary.LittleEndian.Uint64(buf[wordByte:]) >> uint(offset%uint64SizeBits)
+		mask := (uint64(1) << uint(leading)) - 1
+		count := bits.OnesCount64(word & mask)
+		return count + CountSetBits(buf[wordByte+uint64SizeBytes:], 0, n-leading)
+	}
+
+	// Some short buffers do not contain a complete 64-bit word.
+	byteOffset := offset / 8
+	shift := uint(offset & 7)
+	first := min(n, 8-int(shift))
+	count := bits.OnesCount8((buf[byteOffset] >> shift) & byte((1<<uint(first))-1))
+	if first == n {
+		return count
+	}
+	return count + CountSetBits(buf[byteOffset+1:], 0, n-first)
 }
 
 func min(a, b int) int {

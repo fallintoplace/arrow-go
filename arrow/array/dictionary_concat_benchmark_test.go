@@ -81,3 +81,62 @@ func BenchmarkConcatenateSameDictionary(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkConcatenateSharedLargeDictionary(b *testing.B) {
+	const (
+		totalValues    = 1 << 16
+		dictionarySize = 1 << 14
+		chunkCount     = 1024
+	)
+
+	mem := memory.NewGoAllocator()
+	indices := make([]int32, totalValues)
+	for i := range indices {
+		indices[i] = int32(i % dictionarySize)
+	}
+	indexBuilder := array.NewInt32Builder(mem)
+	indexBuilder.AppendValues(indices, nil)
+	indexArray := indexBuilder.NewInt32Array()
+	indexBuilder.Release()
+	defer indexArray.Release()
+
+	values := make([]string, dictionarySize)
+	for i := range values {
+		values[i] = fmt.Sprintf("key-%05d", i)
+	}
+	dictBuilder := array.NewStringBuilder(mem)
+	dictBuilder.AppendValues(values, nil)
+	dictionary := dictBuilder.NewStringArray()
+	dictBuilder.Release()
+	defer dictionary.Release()
+
+	dictType := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
+	backing := array.NewDictionaryArray(dictType, indexArray, dictionary)
+	defer backing.Release()
+
+	chunks := make([]arrow.Array, chunkCount)
+	for i := range chunks {
+		begin := int64(i * totalValues / chunkCount)
+		end := int64((i + 1) * totalValues / chunkCount)
+		chunks[i] = array.NewSlice(backing, begin, end)
+	}
+	defer func() {
+		for _, chunk := range chunks {
+			chunk.Release()
+		}
+	}()
+
+	b.SetBytes(totalValues * arrow.Int32SizeBytes)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		result, err := array.Concatenate(chunks, mem)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if result.Len() != totalValues {
+			b.Fatalf("result length = %d, want %d", result.Len(), totalValues)
+		}
+		result.Release()
+	}
+}

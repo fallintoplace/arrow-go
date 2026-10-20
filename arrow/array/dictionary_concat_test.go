@@ -53,3 +53,44 @@ func TestConcatSameDictionarySlices(t *testing.T) {
 
 	assert.True(t, array.Equal(expected, actual))
 }
+
+func TestConcatDictionarySharedAndDistinctStorage(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	defer mem.AssertSize(t, 0)
+
+	dictType := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
+	first, err := array.DictArrayFromJSON(mem, dictType, `[0, 1, null]`, `["a", "b"]`)
+	require.NoError(t, err)
+	defer first.Release()
+	shared := array.NewSlice(first, 1, 3)
+	defer shared.Release()
+	require.True(t, first.Data().Dictionary() == shared.Data().Dictionary())
+
+	equalCopy, err := array.DictArrayFromJSON(mem, dictType, `[1, 0]`, `["a", "b"]`)
+	require.NoError(t, err)
+	defer equalCopy.Release()
+	different, err := array.DictArrayFromJSON(mem, dictType, `[0, 1]`, `["c", "a"]`)
+	require.NoError(t, err)
+	defer different.Release()
+
+	for _, tc := range []struct {
+		name        string
+		final       arrow.Array
+		indicesJSON string
+		valuesJSON  string
+	}{
+		{"equal content, distinct storage", equalCopy, `[0, 1, null, 1, null, 1, 0]`, `["a", "b"]`},
+		{"different dictionary requires unification", different, `[0, 1, null, 1, null, 2, 0]`, `["a", "b", "c"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := array.Concatenate([]arrow.Array{first, shared, tc.final}, mem)
+			require.NoError(t, err)
+			defer got.Release()
+
+			want, err := array.DictArrayFromJSON(mem, dictType, tc.indicesJSON, tc.valuesJSON)
+			require.NoError(t, err)
+			defer want.Release()
+			assert.True(t, array.Equal(want, got))
+		})
+	}
+}

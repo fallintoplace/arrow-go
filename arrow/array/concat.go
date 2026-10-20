@@ -604,9 +604,14 @@ func concat(data []arrow.ArrayData, mem memory.Allocator) (arr arrow.ArrayData, 
 		idxType := dt.IndexType.(arrow.FixedWidthDataType)
 		// two cases: all dictionaries are the same or we need to unify them
 		dictsSame := true
-		dict0 := MakeFromData(data[0].Dictionary())
+		dictData := data[0].Dictionary()
+		dict0 := MakeFromData(dictData)
 		defer dict0.Release()
-		for _, d := range data {
+		for _, d := range data[1:] {
+			// Slices can share dictionary data even when their indices differ.
+			if d.Dictionary() == dictData {
+				continue
+			}
 			dict := MakeFromData(d.Dictionary())
 			if !Equal(dict0, dict) {
 				dict.Release()

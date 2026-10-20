@@ -455,7 +455,9 @@ func SortIndices(ctx *exec.KernelCtx, columns []*arrow.Chunked, keys []SortKey) 
 			k0 := keys[0]
 			c0 := comparators[0]
 			if !c0.columnHasValidityNulls() && !c0.hasNullLikeValues() {
-				slices.SortStableFunc(indices, func(a, b uint64) int { return c0.compareRowsForKey(a, b, k0) })
+				if !tryIntegerRadixSort(ctx, chunks[0], indices, k0.Order) {
+					slices.SortStableFunc(indices, func(a, b uint64) int { return c0.compareRowsForKey(a, b, k0) })
+				}
 			} else {
 				tmpBuf := ctx.Allocate(nRows * arrow.Uint64SizeBytes)
 				tmp := arrow.GetData[uint64](tmpBuf.Buf())[:nRows]

@@ -150,7 +150,14 @@ func (z *zstdDecompressor) Close() {
 
 type lz4Decompressor struct {
 	*lz4.Reader
+	input bytes.Reader
 	extra [1]byte // probe buffer for trailing data
+}
+
+var lz4DecompressorPool = sync.Pool{
+	New: func() any {
+		return &lz4Decompressor{Reader: lz4.NewReader(nil)}
+	},
 }
 
 func (z *lz4Decompressor) Decompress(dst, src []byte) error {
@@ -158,7 +165,8 @@ func (z *lz4Decompressor) Decompress(dst, src []byte) error {
 		return nil
 	}
 
-	z.Reset(bytes.NewReader(src))
+	z.input.Reset(src)
+	z.Reader.Reset(&z.input)
 	if _, err := io.ReadFull(z.Reader, dst); err != nil {
 		return err
 	}
@@ -177,12 +185,14 @@ func (z *lz4Decompressor) Decompress(dst, src []byte) error {
 
 func (z *lz4Decompressor) Close() {
 	z.Reset(nil)
+	z.input.Reset(nil)
+	lz4DecompressorPool.Put(z)
 }
 
 func getDecompressor(codec flatbuf.CompressionType) decompressor {
 	switch codec {
 	case flatbuf.CompressionTypeLZ4_FRAME:
-		return &lz4Decompressor{Reader: lz4.NewReader(nil)}
+		return lz4DecompressorPool.Get().(*lz4Decompressor)
 	case flatbuf.CompressionTypeZSTD:
 		return zstdDecompressorPool.Get().(*zstdDecompressor)
 	}

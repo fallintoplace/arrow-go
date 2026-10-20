@@ -418,6 +418,14 @@ func SortIndices(ctx *exec.KernelCtx, columns []*arrow.Chunked, keys []SortKey) 
 		}
 	}
 
+	// Large null-free integer columns bypass row comparators and chunk maps.
+	if len(keys) == 1 && nRows >= radixSortMinRows {
+		chunks := columns[0].Chunks()
+		if integerRadixSortable(chunks) {
+			return sortIntegerRadixIndices(ctx, chunks, nRows, keys[0].Order), nil
+		}
+	}
+
 	comparators := make([]columnComparator, len(columns))
 	for i, col := range columns {
 		comp, err := createChunkedComparator(col.Chunks(), nRows, sharedRowMap)
@@ -442,20 +450,6 @@ func SortIndices(ctx *exec.KernelCtx, columns []*arrow.Chunked, keys []SortKey) 
 
 	for i := range indices {
 		indices[i] = uint64(i)
-	}
-
-	// Null-free integer columns can use a stable linear-time radix sort.
-	// For chunked columns the helper flattens only their physical values.
-	if len(keys) == 1 && nRows >= radixSortMinRows {
-		chunks := columns[0].Chunks()
-		if integerRadixSortable(chunks) {
-			tmpBuf := ctx.Allocate(nRows * arrow.Uint64SizeBytes)
-			tmp := arrow.GetData[uint64](tmpBuf.Buf())[:nRows]
-			radixSortIntegerChunks(indices, tmp, chunks, keys[0].Order)
-			tmpBuf.Release()
-			out.Buffers[1].WrapBuffer(buf)
-			return out, nil
-		}
 	}
 
 	if len(keys) == 1 {

@@ -444,6 +444,20 @@ func SortIndices(ctx *exec.KernelCtx, columns []*arrow.Chunked, keys []SortKey) 
 		indices[i] = uint64(i)
 	}
 
+	// Null-free integer columns can use a stable linear-time radix sort.
+	// For chunked columns the helper flattens only their physical values.
+	if len(keys) == 1 && nRows >= radixSortMinRows {
+		chunks := columns[0].Chunks()
+		if integerRadixSortable(chunks) {
+			tmpBuf := ctx.Allocate(nRows * arrow.Uint64SizeBytes)
+			tmp := arrow.GetData[uint64](tmpBuf.Buf())[:nRows]
+			radixSortIntegerChunks(indices, tmp, chunks, keys[0].Order)
+			tmpBuf.Release()
+			out.Buffers[1].WrapBuffer(buf)
+			return out, nil
+		}
+	}
+
 	if len(keys) == 1 {
 		chunks := columns[0].Chunks()
 		if len(chunks) > 1 {

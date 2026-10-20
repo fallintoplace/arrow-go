@@ -79,3 +79,57 @@ func TestNewChunkedSliceRetainsFullChunks(t *testing.T) {
 		})
 	}
 }
+
+func TestNewChunkedSliceFullRangeWithEmptyChunks(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	defer mem.AssertSize(t, 0)
+
+	builder := array.NewInt32Builder(mem)
+	empty := builder.NewInt32Array()
+	builder.AppendValues([]int32{1, 2}, []bool{true, false})
+	first := builder.NewInt32Array()
+	builder.AppendValues([]int32{3}, nil)
+	last := builder.NewInt32Array()
+	builder.Release()
+
+	input := arrow.NewChunked(arrow.PrimitiveTypes.Int32, []arrow.Array{
+		empty, first, empty, last, empty,
+	})
+	empty.Release()
+	first.Release()
+	last.Release()
+
+	result := array.NewChunkedSlice(input, 0, int64(input.Len()))
+	require.NotSame(t, input, result)
+	input.Release()
+	defer result.Release()
+
+	require.Equal(t, 3, result.Len())
+	require.Equal(t, 1, result.NullN())
+	require.Len(t, result.Chunks(), 3)
+	require.Same(t, first, result.Chunk(0))
+	require.Same(t, empty, result.Chunk(1))
+	require.Same(t, last, result.Chunk(2))
+	require.True(t, result.Chunk(0).(*array.Int32).IsNull(1))
+	require.Equal(t, int32(3), result.Chunk(2).(*array.Int32).Value(0))
+}
+
+func TestNewChunkedSliceFullRangeOnlyEmptyChunks(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	defer mem.AssertSize(t, 0)
+
+	builder := array.NewInt32Builder(mem)
+	empty := builder.NewInt32Array()
+	builder.Release()
+
+	input := arrow.NewChunked(arrow.PrimitiveTypes.Int32, []arrow.Array{empty, empty})
+	empty.Release()
+
+	result := array.NewChunkedSlice(input, 0, 0)
+	input.Release()
+	defer result.Release()
+
+	require.Zero(t, result.Len())
+	require.Zero(t, result.NullN())
+	require.Empty(t, result.Chunks())
+}

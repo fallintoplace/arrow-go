@@ -51,6 +51,20 @@ func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
 		panic("arrow/array: index out of range")
 	}
 
+	if i == 0 && j == int64(a.Len()) {
+		// NewChunked retains the chunks directly, without a temporary slice
+		// and an extra retain/release pass. Drop empty edge chunks as the
+		// general slicing path does, but keep empty chunks in the middle.
+		chunks := a.Chunks()
+		for len(chunks) > 0 && chunks[0].Len() == 0 {
+			chunks = chunks[1:]
+		}
+		for len(chunks) > 0 && chunks[len(chunks)-1].Len() == 0 {
+			chunks = chunks[:len(chunks)-1]
+		}
+		return arrow.NewChunked(a.DataType(), chunks)
+	}
+
 	var (
 		cur    = 0
 		beg    = i

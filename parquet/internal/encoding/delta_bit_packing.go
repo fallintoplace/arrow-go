@@ -410,6 +410,12 @@ func (enc *deltaBitPackEncoder[T]) flushBlock() {
 		// write out the bit width we used into the bytes we reserved earlier
 		enc.bitWriter.WriteAt([]byte{byte(width)}, int64(offset+i))
 
+		// Equal deltas use a zero-bit-width miniblock with no payload.
+		if width == 0 {
+			valuesToWrite -= n
+			continue
+		}
+
 		// write out our deltas
 		for _, val := range enc.deltas[start : start+int(n)] {
 			enc.bitWriter.WriteValue(uint64(val-minDelta), width)

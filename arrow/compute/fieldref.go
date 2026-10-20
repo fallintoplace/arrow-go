@@ -396,7 +396,10 @@ func NewFieldRefFromDotPath(dotpath string) (out FieldRef, err error) {
 			if subend == -1 || dotpath[subend] != ']' {
 				return out, fmt.Errorf("%w: dot path '%s' contained an unterminated index", ErrInvalid, dotpath)
 			}
-			idx, _ := strconv.Atoi(dotpath[:subend])
+			idx, err := strconv.Atoi(dotpath[:subend])
+			if err != nil {
+				return out, fmt.Errorf("%w: invalid field index %q: %v", ErrInvalid, dotpath[:subend], err)
+			}
 			children = append(children, FieldRef{FieldPath{idx}})
 			dotpath = dotpath[subend+1:]
 		default:

@@ -21,6 +21,7 @@ package exprs
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -160,10 +161,19 @@ func NewFieldRefFromDotPath(dotpath string, rootSchema *arrow.Schema) (expr.Refe
 			if subend == -1 || dotpath[subend] != ']' {
 				return nil, fmt.Errorf("%w: dot path '%s' contained an unterminated index", arrow.ErrInvalid, dotpath)
 			}
-			idx, _ := strconv.Atoi(dotpath[:subend])
+			idx, err := strconv.Atoi(dotpath[:subend])
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid field index %q: %v", arrow.ErrInvalid, dotpath[:subend], err)
+			}
+			if idx > math.MaxInt32 {
+				switch curType.(type) {
+				case *arrow.ListType, *arrow.LargeListType, *arrow.FixedSizeListType:
+					return nil, fmt.Errorf("%w: list index out of range in dotpath", arrow.ErrIndex)
+				}
+			}
 			switch ct := curType.(type) {
 			case *arrow.StructType:
-				if idx > ct.NumFields() {
+				if idx >= ct.NumFields() {
 					return nil, fmt.Errorf("%w: field out of bounds in dotpath", arrow.ErrIndex)
 				}
 				curType = ct.Field(idx).Type

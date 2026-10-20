@@ -126,6 +126,15 @@ func TestFieldRefDotPath(t *testing.T) {
 	assert.ErrorIs(t, err, compute.ErrInvalid)
 }
 
+func TestFieldRefDotPathInvalidIndices(t *testing.T) {
+	for _, path := range []string{`[]`, `.alpha[]`, `[999999999999999999999999999999]`} {
+		t.Run(path, func(t *testing.T) {
+			_, err := compute.NewFieldRefFromDotPath(path)
+			assert.ErrorIs(t, err, compute.ErrInvalid)
+		})
+	}
+}
+
 func TestFieldPathNested(t *testing.T) {
 	f0 := arrow.Field{Name: "alpha", Type: arrow.PrimitiveTypes.Int32}
 	f1_0 := arrow.Field{Name: "beta", Type: arrow.PrimitiveTypes.Int32}

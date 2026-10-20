@@ -76,6 +76,12 @@ func TestFieldRefDotPath(t *testing.T) {
 		{`delta`, true, nil},   // not found
 		{`[1234`, true, nil},   // bad syntax
 		{`[1stuf]`, true, nil}, // bad syntax
+
+		{`[3]`, true, nil},
+		{`[]`, true, nil},
+		{`[2].gamma[]`, true, nil},
+		{`[999999999999999999999999999999]`, true, nil},
+		{`[2].gamma[1][2147483648]`, true, nil},
 	}
 
 	for _, tt := range tests {

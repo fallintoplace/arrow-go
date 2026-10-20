@@ -198,3 +198,56 @@ func TestRadixIntegerSortFallsBackForNullsAndSmallInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestRadixIntegerSortAlreadySortedAndEqualValues(t *testing.T) {
+	const length = radixSortMinRows + 1
+	for _, tc := range []struct {
+		name  string
+		order SortOrder
+		value func(int) int64
+	}{
+		{"ascending", Ascending, func(i int) int64 { return int64(i - length/2) }},
+		{"descending", Descending, func(i int) int64 { return int64(length/2 - i) }},
+		{"equal", Ascending, func(int) int64 { return -13 }},
+		{"one_byte", Ascending, func(i int) int64 { return int64(i*17%251 - 125) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := make([]int64, length)
+			for i := range values {
+				values[i] = tc.value(i)
+			}
+			arr := makeRadixTestArray(t, arrow.PrimitiveTypes.Int64, values, 0, false)
+			defer arr.Release()
+			col := arrow.NewChunked(arrow.PrimitiveTypes.Int64, []arrow.Array{arr})
+			defer col.Release()
+			ctx, _ := newBenchKernelCtx(t)
+			result, err := SortIndices(ctx, []*arrow.Chunked{col}, []SortKey{{Order: tc.order}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer result.Release()
+			got := arrow.GetData[uint64](result.Buffers[1].Buf)[:length]
+			expected := make([]uint64, length)
+			for i := range expected {
+				expected[i] = uint64(i)
+			}
+			slices.SortStableFunc(expected, func(a, b uint64) int {
+				va, vb := values[a], values[b]
+				if tc.order == Descending {
+					va, vb = vb, va
+				}
+				switch {
+				case va < vb:
+					return -1
+				case va > vb:
+					return 1
+				default:
+					return 0
+				}
+			})
+			if !slices.Equal(got, expected) {
+				t.Fatal("radix sort does not match stable order")
+			}
+		})
+	}
+}

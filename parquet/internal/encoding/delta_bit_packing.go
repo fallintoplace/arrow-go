@@ -238,6 +238,18 @@ func (d *deltaBitPackDecoder[T]) Discard(n int) (int, error) {
 			}
 		}
 
+		// Zero-width miniblocks contain only minDelta values. If the
+		// entire miniblock is skipped, update the running value directly
+		// instead of allocating and materializing all of its values.
+		if d.currentMiniBlockVals == 0 && remaining >= int(d.valsPerMini) &&
+			d.deltaBitWidths.Bytes()[int(d.miniBlockIdx)] == 0 {
+			d.lastVal += int64(d.valsPerMini) * d.minDelta
+			d.currentBlockVals -= d.valsPerMini
+			d.miniBlockIdx++
+			remaining -= int(d.valsPerMini)
+			continue
+		}
+
 		if d.currentMiniBlockVals == 0 {
 			if err = d.unpackNextMini(); err != nil {
 				return n - remaining, err

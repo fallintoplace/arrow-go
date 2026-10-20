@@ -23,6 +23,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/compute/exec"
 )
 
 const radixSortMinRows = 2048
@@ -50,6 +51,25 @@ func integerRadixSortable(chunks []arrow.Array) bool {
 		}
 	}
 	return true
+}
+
+// sortIntegerRadixIndices bypasses comparator and per-row chunk-map setup for
+// large integer columns. The existing comparison path handles everything else.
+func sortIntegerRadixIndices(ctx *exec.KernelCtx, chunks []arrow.Array, nRows int, order SortOrder) *exec.ExecResult {
+	buf := ctx.Allocate(nRows * arrow.Uint64SizeBytes)
+	indices := arrow.GetData[uint64](buf.Buf())[:nRows]
+	for i := range indices {
+		indices[i] = uint64(i)
+	}
+
+	tmpBuf := ctx.Allocate(nRows * arrow.Uint64SizeBytes)
+	tmp := arrow.GetData[uint64](tmpBuf.Buf())[:nRows]
+	radixSortIntegerChunks(indices, tmp, chunks, order)
+	tmpBuf.Release()
+
+	out := &exec.ExecResult{Len: int64(nRows), Type: arrow.PrimitiveTypes.Uint64}
+	out.Buffers[1].WrapBuffer(buf)
+	return out
 }
 
 func radixSortIntegerChunks(indices, scratch []uint64, chunks []arrow.Array, order SortOrder) {

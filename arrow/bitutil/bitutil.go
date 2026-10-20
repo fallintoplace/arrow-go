@@ -168,20 +168,27 @@ func BitmapAllSet(buf []byte, offset, n int) bool {
 }
 
 func countSetBitsWithOffset(buf []byte, offset, n int) int {
+	prefixBits := min(n, roundUp(offset, uint64SizeBits)-offset)
+	end := offset + prefixBits
 	count := 0
 
-	beg := offset
-	begU8 := roundUp(beg, uint64SizeBits)
-
-	init := min(n, begU8-beg)
-	for i := offset; i < beg+init; i++ {
-		if BitIsSet(buf, i) {
-			count++
-		}
+	// Count partial boundary bytes and full bytes instead of checking each bit.
+	i := offset
+	if i&7 != 0 && i < end {
+		take := min(8-(i&7), end-i)
+		mask := byte((1<<uint(take))-1) << uint(i&7)
+		count += bits.OnesCount8(buf[i/8] & mask)
+		i += take
+	}
+	for i+8 <= end {
+		count += bits.OnesCount8(buf[i/8])
+		i += 8
+	}
+	if i < end {
+		count += bits.OnesCount8(buf[i/8] & byte((1<<uint(end-i))-1))
 	}
 
-	begU64 := BytesForBits(int64(beg + init))
-	return count + CountSetBits(buf[begU64:], 0, n-init)
+	return count + CountSetBits(buf[BytesForBits(int64(end)):], 0, n-prefixBits)
 }
 
 func roundUp(v, f int) int {

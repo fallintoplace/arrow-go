@@ -380,12 +380,28 @@ func (enc *deltaBitPackEncoder[T]) flushBlock() {
 		return
 	}
 
-	// determine the minimum delta value
-	minDelta := int64(math.MaxInt64)
-	for _, delta := range enc.deltas {
+	// Find the minimum delta and check whether the block is constant in one
+	// pass. A separate equality scan hurts mixed blocks with a late outlier.
+	firstDelta := enc.deltas[0]
+	minDelta := firstDelta
+	allSame := true
+	for _, delta := range enc.deltas[1:] {
 		if delta < minDelta {
 			minDelta = delta
 		}
+		if delta != firstDelta {
+			allSame = false
+		}
+	}
+	if allSame {
+		// Identical deltas need only the minimum and zero widths, no payload.
+		enc.bitWriter.WriteZigZagVlqInt(firstDelta)
+		offset, _ := enc.bitWriter.SkipBytes(int(enc.numMiniBlocks))
+		// Explicitly clear the reserved widths for a reused buffer.
+		var widths [defaultNumMiniBlocks]byte
+		enc.bitWriter.WriteAt(widths[:], int64(offset))
+		enc.deltas = enc.deltas[:0]
+		return
 	}
 
 	enc.bitWriter.WriteZigZagVlqInt(minDelta)
@@ -410,17 +426,20 @@ func (enc *deltaBitPackEncoder[T]) flushBlock() {
 		// write out the bit width we used into the bytes we reserved earlier
 		enc.bitWriter.WriteAt([]byte{byte(width)}, int64(offset+i))
 
-		// write out our deltas
-		for _, val := range enc.deltas[start : start+int(n)] {
-			enc.bitWriter.WriteValue(uint64(val-minDelta), width)
+		// A zero-width miniblock has no packed payload. Avoid per-value
+		// writes for these miniblocks even if the full block is not constant.
+		if width != 0 {
+			for _, val := range enc.deltas[start : start+int(n)] {
+				enc.bitWriter.WriteValue(uint64(val-minDelta), width)
+			}
+
+			// pad the last block if n < miniBlockSize
+			for pad := n; pad < int64(enc.miniBlockSize); pad++ {
+				enc.bitWriter.WriteValue(0, width)
+			}
 		}
 
 		valuesToWrite -= n
-
-		// pad the last block if n < miniBlockSize
-		for ; n < int64(enc.miniBlockSize); n++ {
-			enc.bitWriter.WriteValue(0, width)
-		}
 	}
 	enc.deltas = enc.deltas[:0]
 }
@@ -484,12 +503,17 @@ func (enc *deltaBitPackEncoder[T]) FlushValues() (Buffer, error) {
 
 	buffer = buffer[:headerWriter.Written()]
 	enc.totalVals = 0
+	enc.firstVal, enc.currentVal = 0, 0
 
 	if enc.bitWriter != nil {
 		flushed := enc.sink.Finish()
 		defer flushed.Release()
 
 		buffer = append(buffer, flushed.Buf()[:enc.bitWriter.Written()]...)
+		// Finish hands the sink's bytes to us, so this writer's position no longer
+		// matches the sink. The next Put creates a new writer; until then, a flush
+		// (for example of an all-null page) must write only the header.
+		enc.bitWriter = nil
 	}
 	return poolBuffer{memory.NewBufferBytes(buffer)}, nil
 }

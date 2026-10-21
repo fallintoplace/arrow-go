@@ -18,6 +18,8 @@ package arrow
 
 import (
 	"fmt"
+	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
@@ -137,6 +139,10 @@ type Chunked struct {
 
 	chunks []Array
 
+	// Built on demand for repeated random access into heavily chunked arrays.
+	chunkIndexOnce	sync.Once
+	chunkEnds		[]int
+
 	length int
 	nulls  int
 	dtype  DataType
@@ -188,6 +194,7 @@ func (a *Chunked) Release() {
 			arr.Release()
 		}
 		a.chunks = nil
+		a.chunkEnds = nil
 		a.length = 0
 		a.nulls = 0
 	}
@@ -198,3 +205,45 @@ func (a *Chunked) NullN() int         { return a.nulls }
 func (a *Chunked) DataType() DataType { return a.dtype }
 func (a *Chunked) Chunks() []Array    { return a.chunks }
 func (a *Chunked) Chunk(i int) Array  { return a.chunks[i] }
+
+const chunkIndexThreshold = 256
+
+// ChunkIndex returns the chunk containing position and its relative offset.
+// At Len(), it returns len(Chunks()), 0. Empty chunks are skipped.
+// The index is built lazily for arrays with many chunks; small arrays use a
+// linear scan to avoid the index allocation.
+func (a *Chunked) ChunkIndex(position int) (int, int) {
+	if position < 0 || position > a.length {
+		panic("arrow: chunk position out of range")
+	}
+	if position == a.length {
+		return len(a.chunks), 0
+	}
+
+	if len(a.chunks) < chunkIndexThreshold {
+		for i, chunk := range a.chunks {
+			if position < chunk.Len() {
+				return i, position
+			}
+			position -= chunk.Len()
+		}
+		panic("arrow: inconsistent chunked length")
+	}
+
+	a.chunkIndexOnce.Do(func() {
+		a.chunkEnds = make([]int, len(a.chunks))
+		end := 0
+		for i, chunk := range a.chunks {
+			end += chunk.Len()
+			a.chunkEnds[i] = end
+		}
+	})
+
+	chunk := sort.Search(len(a.chunkEnds), func(i int) bool {
+		return a.chunkEnds[i] > position
+	})
+	if chunk == 0 {
+		return 0, position
+	}
+	return chunk, position - a.chunkEnds[chunk-1]
+}

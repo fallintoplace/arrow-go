@@ -65,7 +65,7 @@ func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
 	// A narrow slice should not allocate a chunk header for every input chunk.
 	capacity := len(a.Chunks()) - cur
 	if int(sz) < capacity {
-		capacity = int(sz) + 1
+		capacity = int(sz)
 	}
 	chunks := make([]arrow.Array, 0, capacity)
 

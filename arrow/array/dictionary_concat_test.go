@@ -18,6 +18,7 @@ package array_test
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -54,7 +55,6 @@ func TestConcatSameDictionarySlices(t *testing.T) {
 
 	assert.True(t, array.Equal(expected, actual))
 }
-
 
 func TestConcatSharedHighCardinalityDictionarySlices(t *testing.T) {
 	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
@@ -150,4 +150,40 @@ func TestConcatDistinctDictionaryFallback(t *testing.T) {
 	for i, value := range want {
 		assert.Equal(t, value, dictValues.Value(dictResult.GetValueIndex(i)), "row %d", i)
 	}
+}
+
+func TestConcatSlicesSharingNaNDictionary(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.DefaultAllocator)
+	defer mem.AssertSize(t, 0)
+
+	dictionaryBuilder := array.NewFloat64Builder(mem)
+	dictionaryBuilder.AppendValues([]float64{1, math.NaN()}, nil)
+	dictionary := dictionaryBuilder.NewFloat64Array()
+	dictionaryBuilder.Release()
+	defer dictionary.Release()
+
+	indicesBuilder := array.NewInt8Builder(mem)
+	indicesBuilder.AppendValues([]int8{1, 0, 1}, nil)
+	indices := indicesBuilder.NewInt8Array()
+	indicesBuilder.Release()
+	defer indices.Release()
+
+	dictType := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int8, ValueType: arrow.PrimitiveTypes.Float64}
+	backing := array.NewDictionaryArray(dictType, indices, dictionary)
+	defer backing.Release()
+	first := array.NewSlice(backing, 0, 2)
+	defer first.Release()
+	second := array.NewSlice(backing, 2, 3)
+	defer second.Release()
+
+	actual, err := array.Concatenate([]arrow.Array{first, second}, mem)
+	require.NoError(t, err)
+	defer actual.Release()
+	assert.Same(t, backing.Data().Dictionary(), actual.Data().Dictionary())
+	dict := actual.(*array.Dictionary)
+	assert.Equal(t, 3, dict.Len())
+	assert.Equal(t, 1, dict.GetValueIndex(0))
+	assert.Equal(t, 0, dict.GetValueIndex(1))
+	assert.Equal(t, 1, dict.GetValueIndex(2))
+	assert.True(t, math.IsNaN(dict.Dictionary().(*array.Float64).Value(1)))
 }

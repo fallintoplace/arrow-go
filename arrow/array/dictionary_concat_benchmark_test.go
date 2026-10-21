@@ -82,7 +82,6 @@ func BenchmarkConcatenateSameDictionary(b *testing.B) {
 	}
 }
 
-
 func BenchmarkConcatenateSameDictionaryHighCardinality(b *testing.B) {
 	const totalValues = 1 << 16
 	mem := memory.NewGoAllocator()

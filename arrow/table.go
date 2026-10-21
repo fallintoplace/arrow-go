@@ -140,8 +140,8 @@ type Chunked struct {
 	chunks []Array
 
 	// Built on demand for repeated random access into heavily chunked arrays.
-	chunkIndexOnce sync.Once
-	chunkEnds      []int
+	chunkIndexOnce	sync.Once
+	chunkEnds		[]int
 
 	length int
 	nulls  int

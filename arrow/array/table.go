@@ -51,17 +51,23 @@ func NewChunkedSlice(a *arrow.Chunked, i, j int64) *arrow.Chunked {
 		panic("arrow/array: index out of range")
 	}
 
-	var (
-		cur    = 0
-		beg    = i
-		sz     = j - i
-		chunks = make([]arrow.Array, 0, len(a.Chunks()))
-	)
-
-	for cur < len(a.Chunks()) && beg >= int64(a.Chunks()[cur].Len()) {
-		beg -= int64(a.Chunks()[cur].Len())
-		cur++
+	if i == j {
+		return arrow.NewChunked(a.DataType(), nil)
 	}
+
+	cur, beg := 0, i
+	if i != 0 || len(a.Chunks()) == 0 || a.Chunk(0).Len() == 0 {
+		idx, offset := a.ChunkIndex(int(i))
+		cur, beg = idx, int64(offset)
+	}
+
+	sz := j - i
+	// A narrow slice should not allocate a chunk header for every input chunk.
+	capacity := len(a.Chunks()) - cur
+	if int(sz) < capacity {
+		capacity = int(sz) + 1
+	}
+	chunks := make([]arrow.Array, 0, capacity)
 
 	for cur < len(a.Chunks()) && sz > 0 {
 		arr := a.Chunks()[cur]

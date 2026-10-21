@@ -81,3 +81,66 @@ func BenchmarkConcatenateSameDictionary(b *testing.B) {
 		})
 	}
 }
+
+
+func BenchmarkConcatenateSameDictionaryHighCardinality(b *testing.B) {
+	const totalValues = 1 << 16
+	mem := memory.NewGoAllocator()
+	dictType := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
+
+	for _, dictSize := range []int{4096, 65536} {
+		b.Run(fmt.Sprintf("dictionary-%d", dictSize), func(b *testing.B) {
+			values := make([]string, dictSize)
+			for i := range values {
+				values[i] = fmt.Sprintf("value-%06d", i)
+			}
+			dictionaryBuilder := array.NewStringBuilder(mem)
+			dictionaryBuilder.AppendValues(values, nil)
+			dictionary := dictionaryBuilder.NewStringArray()
+			dictionaryBuilder.Release()
+			defer dictionary.Release()
+
+			indicesValues := make([]int32, totalValues)
+			for i := range indicesValues {
+				indicesValues[i] = int32(i % dictSize)
+			}
+			indicesBuilder := array.NewInt32Builder(mem)
+			indicesBuilder.AppendValues(indicesValues, nil)
+			indices := indicesBuilder.NewInt32Array()
+			indicesBuilder.Release()
+			defer indices.Release()
+
+			backing := array.NewDictionaryArray(dictType, indices, dictionary)
+			defer backing.Release()
+
+			for _, chunkCount := range []int{64, 1024, 4096} {
+				b.Run(fmt.Sprintf("chunks-%d", chunkCount), func(b *testing.B) {
+					chunkSize := totalValues / chunkCount
+					chunks := make([]arrow.Array, chunkCount)
+					for i := range chunks {
+						begin := int64(i * chunkSize)
+						chunks[i] = array.NewSlice(backing, begin, begin+int64(chunkSize))
+					}
+					defer func() {
+						for _, chunk := range chunks {
+							chunk.Release()
+						}
+					}()
+					b.SetBytes(int64(totalValues * arrow.Int32SizeBytes))
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						result, err := array.Concatenate(chunks, mem)
+						if err != nil {
+							b.Fatal(err)
+						}
+						if result.Len() != totalValues {
+							b.Fatalf("result length = %d, want %d", result.Len(), totalValues)
+						}
+						result.Release()
+					}
+				})
+			}
+		})
+	}
+}

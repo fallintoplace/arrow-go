@@ -140,6 +140,17 @@ func (b *BitmapWriter) Next() {
 
 // AppendBools writes a series of booleans to the bitmapwriter and returns
 // the number of remaining bytes left in the buffer for writing.
+// packEightBools packs eight one-byte Go bools into the low eight bits of a byte.
+// Go stores false as zero and true with its low bit set. LittleEndian maintains
+// bitmap bit order on both little- and big-endian platforms.
+func packEightBools(values []bool) byte {
+	word := binary.LittleEndian.Uint64((*[8]byte)(unsafe.Pointer(&values[0]))[:])
+	return byte(((word & 0x0101010101010101) * 0x0102040810204080) >> 56)
+}
+
+// AppendBools appends up to the remaining length of this BitmapWriter.
+// Full destination bytes are packed eight booleans at a time. Partial bytes
+// retain bits outside the appended range.
 func (b *BitmapWriter) AppendBools(in []bool) int {
 	space := min(b.length-b.pos, len(in))
 	if space == 0 {
@@ -147,22 +158,60 @@ func (b *BitmapWriter) AppendBools(in []bool) int {
 	}
 
 	bitOffset := bits.TrailingZeros32(uint32(b.bitMask))
-	// location that the first byte needs to be written to for appending
-	appslice := b.buf[int(b.byteOffset) : b.byteOffset+int(BytesForBits(int64(bitOffset+space)))]
-	// update everything but curByte
-	appslice[0] = b.curByte
-	for i, b := range in[:space] {
-		if b {
-			SetBit(appslice, i+bitOffset)
-		} else {
-			ClearBit(appslice, i+bitOffset)
+	values := in[:space]
+	byteOffset := b.byteOffset
+
+	// Finish the current byte before writing aligned full bytes.
+	if bitOffset != 0 {
+		n := min(8-bitOffset, len(values))
+		current := b.curByte
+		for i, v := range values[:n] {
+			mask := byte(1) << uint(bitOffset+i)
+			if v {
+				current |= mask
+			} else {
+				current &^= mask
+			}
+		}
+		b.buf[byteOffset] = current
+		values = values[n:]
+		if n == 8-bitOffset {
+			byteOffset++
 		}
 	}
 
+	for len(values) >= 8 {
+		b.buf[byteOffset] = packEightBools(values[:8])
+		values = values[8:]
+		byteOffset++
+	}
+
+	if len(values) > 0 {
+		current := b.buf[byteOffset]
+		if bitOffset == 0 && byteOffset == b.byteOffset {
+			current = b.curByte
+		}
+		var packed byte
+		for i, v := range values {
+			if v {
+				packed |= 1 << uint(i)
+			}
+		}
+		mask := byte((1 << uint(len(values))) - 1)
+		b.buf[byteOffset] = (current &^ mask) | packed
+	}
+
 	b.pos += space
-	b.bitMask = BitMask[(bitOffset+space)%8]
-	b.byteOffset += (bitOffset + space) / 8
-	b.curByte = appslice[len(appslice)-1]
+	totalBitOffset := bitOffset + space
+	b.bitMask = BitMask[totalBitOffset%8]
+	b.byteOffset += totalBitOffset / 8
+	if b.byteOffset < len(b.buf) {
+		// Keep Set/Clear, AppendBitmap, and subsequent AppendBools calls
+		// consistent, including after an exact byte-aligned append.
+		b.curByte = b.buf[b.byteOffset]
+	} else {
+		b.curByte = 0
+	}
 
 	return space
 }

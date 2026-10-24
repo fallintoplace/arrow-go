@@ -24,6 +24,7 @@ import (
 	"math/bits"
 	"strings"
 
+	"github.com/apache/arrow-go/v18/arrow/internal/decimalparse"
 	"github.com/apache/arrow-go/v18/arrow/internal/debug"
 )
 
@@ -233,6 +234,18 @@ func FromFloat64(v float64, prec, scale int32) (Num, error) {
 var pt5 = big.NewFloat(0.5)
 
 func FromString(v string, prec, scale int32) (n Num, err error) {
+	if prec > 0 && prec <= MaxPrecision && scale >= 0 && scale <= MaxScale {
+		if magnitude, negative, exact := decimalparse.ExactScaledUint64(v, scale); exact {
+			value := FromU64(magnitude)
+			if negative {
+				value = value.Negate()
+			}
+			if value.FitsInPrecision(prec) {
+				return value, nil
+			}
+		}
+	}
+
 	// time for some math!
 	// Our input precision means "number of digits of precision" but the
 	// math/big library refers to precision in floating point terms

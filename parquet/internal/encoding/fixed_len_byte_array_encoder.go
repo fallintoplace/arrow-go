@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/internal/hashing"
 	"github.com/apache/arrow-go/v18/parquet"
@@ -41,9 +42,12 @@ func (enc *PlainFixedLenByteArrayEncoder) Put(in []parquet.FixedLenByteArray) {
 		return
 	}
 
-	bytesNeeded := len(in) * typeLen
-	enc.sink.Reserve(bytesNeeded)
+	enc.sink.Reserve(len(in) * typeLen)
+	enc.putPlainValues(in, typeLen)
+}
 
+// putPlainValues writes values into an already-reserved buffer.
+func (enc *PlainFixedLenByteArrayEncoder) putPlainValues(in []parquet.FixedLenByteArray, typeLen int) {
 	for _, val := range in {
 		if val == nil {
 			if len(enc.zeroValue) != typeLen {
@@ -77,22 +81,32 @@ func (enc *PlainFixedLenByteArrayEncoder) Release() {
 
 // PutSpaced is like Put but works with data that is spaced out according to the passed in bitmap
 func (enc *PlainFixedLenByteArrayEncoder) PutSpaced(in []parquet.FixedLenByteArray, validBits []byte, validBitsOffset int64) {
-	if validBits != nil {
-		if enc.bitSetReader == nil {
-			enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
-		} else {
-			enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
-		}
-
-		for {
-			run := enc.bitSetReader.NextRun()
-			if run.Length == 0 {
-				break
-			}
-			enc.Put(in[int(run.Pos):int(run.Pos+run.Length)])
-		}
-	} else {
+	if validBits == nil {
 		enc.Put(in)
+		return
+	}
+	typeLen := enc.descr.TypeLength()
+	if typeLen == 0 {
+		return
+	}
+
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), len(in))
+	if validCount == 0 {
+		return
+	}
+	enc.sink.Reserve(validCount * typeLen)
+
+	if enc.bitSetReader == nil {
+		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
+	} else {
+		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
+	}
+	for {
+		run := enc.bitSetReader.NextRun()
+		if run.Length == 0 {
+			break
+		}
+		enc.putPlainValues(in[run.Pos:run.Pos+run.Length], typeLen)
 	}
 }
 
@@ -108,6 +122,12 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 	}
 
 	nvalues := int64(len(values) / enc.typeLen)
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), int(nvalues))
+	if validCount == 0 {
+		return
+	}
+	enc.sink.Reserve(validCount * enc.typeLen)
+
 	if enc.bitSetReader == nil {
 		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, nvalues)
 	} else {
@@ -121,7 +141,7 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 		}
 		start := int(run.Pos) * enc.typeLen
 		end := int(run.Pos+run.Length) * enc.typeLen
-		enc.PutArrow(values[start:end])
+		enc.sink.UnsafeWrite(values[start:end])
 	}
 }
 

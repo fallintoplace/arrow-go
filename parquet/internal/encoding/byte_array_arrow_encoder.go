@@ -57,9 +57,29 @@ func putArrowPlainSpaced[T arrowByteArrayOffset](sink *PooledBufferWriter, value
 		return
 	}
 
-	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(offsets)-1), func(pos, length int64) {
-		putArrowPlain(sink, values, offsets[pos:pos+length+1])
+	// Offsets make each valid run's payload size available in O(1).
+	// Gather the exact size before writing so even alternating validity
+	// only requires one buffer reservation for the entire batch.
+	nvalues := int64(len(offsets) - 1)
+	encodedSize := 0
+	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, nvalues, func(pos, length int64) {
+		encodedSize += int(length)*4 + int(offsets[pos+length]-offsets[pos])
 	})
+	if encodedSize == 0 {
+		return
+	}
+
+	sink.Reserve(encodedSize)
+	out := sink.buf.Buf()[sink.pos : sink.pos+encodedSize]
+	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, nvalues, func(pos, length int64) {
+		for i := pos; i < pos+length; i++ {
+			start, end := int(offsets[i]), int(offsets[i+1])
+			binary.LittleEndian.PutUint32(out, uint32(end-start))
+			copy(out[4:], values[start:end])
+			out = out[4+end-start:]
+		}
+	})
+	sink.pos += encodedSize
 }
 
 func (enc *PlainByteArrayEncoder) PutArrow(values []byte, offsets []int32) {

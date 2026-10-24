@@ -1,0 +1,64 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Parquet spaced encoder performance
+on:
+  pull_request:
+    paths:
+      - "parquet/internal/encoding/**"
+      - ".github/workflows/bench-parquet-spaced.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Run correctness tests
+        run: go test ./parquet/internal/encoding -run '^TestPlainSpacedBatch' -count=1 -timeout=10m
+      - name: Benchmark baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/arrow-go-base" "$BASE_SHA"
+          cp parquet/internal/encoding/plain_spaced_batch_benchmark_test.go "$RUNNER_TEMP/arrow-go-base/parquet/internal/encoding/"
+          cd "$RUNNER_TEMP/arrow-go-base"
+          GOMAXPROCS=1 go test ./parquet/internal/encoding -run '^$' -bench '^BenchmarkPlainSpacedBatch' -benchtime=200ms -count=3 -benchmem -cpu=1 -timeout=15m | tee "$RUNNER_TEMP/benchmark-before.txt"
+      - name: Benchmark candidate
+        run: |
+          GOMAXPROCS=1 go test ./parquet/internal/encoding -run '^$' -bench '^BenchmarkPlainSpacedBatch' -benchtime=200ms -count=3 -benchmem -cpu=1 -timeout=15m | tee "$RUNNER_TEMP/benchmark-after.txt"
+      - name: Upload raw benchmark results
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: parquet-spaced-before-after
+          path: |
+            ${{ runner.temp }}/benchmark-before.txt
+            ${{ runner.temp }}/benchmark-after.txt
+          retention-days: 7

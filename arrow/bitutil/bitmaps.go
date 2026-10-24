@@ -18,6 +18,7 @@ package bitutil
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/bits"
 	"unsafe"
@@ -443,28 +444,14 @@ func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []
 	bitOffset := srcOffset % 8
 	destBitOffset := dstOffset % 8
 
-	// slow path, one of the bitmaps are not byte aligned.
+	// Bitmap word readers and writers are unnecessary for unaligned
+	// transfers. Matching bit offsets can copy whole bytes, while different
+	// offsets need only a shifted read per output word.
 	if bitOffset != 0 || destBitOffset != 0 {
-		rdr := NewBitmapWordReader(src, srcOffset, length)
-		wr := NewBitmapWordWriter(dst, dstOffset, length)
-
-		nwords := rdr.Words()
-		for nwords > 0 {
-			nwords--
-			if mode == transferInvert {
-				wr.PutNextWord(^rdr.NextWord())
-			} else {
-				wr.PutNextWord(rdr.NextWord())
-			}
-		}
-		nbytes := rdr.TrailingBytes()
-		for nbytes > 0 {
-			nbytes--
-			bt, validBits := rdr.NextTrailingByte()
-			if mode == transferInvert {
-				bt = ^bt
-			}
-			wr.PutNextTrailingByte(bt, validBits)
+		if bitOffset == destBitOffset {
+			transferEqualOffsetBitmap(mode, src, srcOffset, length, dst, dstOffset)
+		} else {
+			transferShiftedBitmap(mode, src, srcOffset, length, dst, dstOffset)
 		}
 		return
 	}
@@ -484,9 +471,7 @@ func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []
 	trailMask := byte(uint(1)<<(8-trailingBits)) - 1
 	var lastData byte
 	if mode == transferInvert {
-		for i, b := range src[:nbytes-1] {
-			dst[i] = ^b
-		}
+		invertBitmapBytes(src[:nbytes-1], dst[:nbytes-1])
 		lastData = ^src[nbytes-1]
 	} else {
 		copy(dst, src[:nbytes-1])
@@ -495,6 +480,111 @@ func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []
 
 	dst[nbytes-1] &= ^trailMask
 	dst[nbytes-1] |= lastData & trailMask
+}
+
+// invertBitmapBytes inverts complete bytes in words to avoid a byte-at-a-time
+// loop on large bitmap transfers. Source and destination must not overlap.
+func invertBitmapBytes(src, dst []byte) {
+	for len(src) >= 8 {
+		binary.LittleEndian.PutUint64(dst, ^binary.LittleEndian.Uint64(src))
+		src = src[8:]
+		dst = dst[8:]
+	}
+	for i, b := range src {
+		dst[i] = ^b
+	}
+}
+
+// transferEqualOffsetBitmap copies or inverts a range whose source and
+// destination have identical offsets within their respective first bytes.
+// The first and last bytes are masked to preserve adjacent bits.
+func transferEqualOffsetBitmap(mode transferMode, src []byte, srcOffset, length int, dst []byte, dstOffset int) {
+	offset := srcOffset % 8
+	src = src[srcOffset/8:]
+	dst = dst[dstOffset/8:]
+	nbytes := int(BytesForBits(int64(offset + length)))
+	firstMask := byte(0xff << offset)
+
+	var invertMask byte
+	if mode == transferInvert {
+		invertMask = 0xff
+	}
+
+	if nbytes == 1 {
+		mask := firstMask & byte((1<<uint(offset+length))-1)
+		dst[0] = (dst[0] &^ mask) | ((src[0] ^ invertMask) & mask)
+		return
+	}
+
+	dst[0] = (dst[0] &^ firstMask) | ((src[0] ^ invertMask) & firstMask)
+	if mode == transferInvert {
+		invertBitmapBytes(src[1:nbytes-1], dst[1:nbytes-1])
+	} else {
+		copy(dst[1:nbytes-1], src[1:nbytes-1])
+	}
+
+	tailBits := (offset + length) % 8
+	if tailBits == 0 {
+		dst[nbytes-1] = src[nbytes-1] ^ invertMask
+		return
+	}
+	lastMask := byte((1 << uint(tailBits)) - 1)
+	dst[nbytes-1] = (dst[nbytes-1] &^ lastMask) | ((src[nbytes-1] ^ invertMask) & lastMask)
+}
+
+// transferShiftedBitmap handles different source and destination bit offsets.
+// Complete output bytes are assembled from successive input words. A partial
+// first or last byte is masked so bits outside the range are unchanged.
+func transferShiftedBitmap(mode transferMode, src []byte, srcOffset, length int, dst []byte, dstOffset int) {
+	var invertMask uint64
+	if mode == transferInvert {
+		invertMask = ^uint64(0)
+	}
+
+	// Align the output to a byte boundary without touching leading bits.
+	if dstBit := dstOffset % 8; dstBit != 0 {
+		n := min(length, 8-dstBit)
+		srcByte, srcBit := srcOffset/8, srcOffset%8
+		value := uint16(src[srcByte]) >> srcBit
+		if srcBit+n > 8 {
+			value |= uint16(src[srcByte+1]) << (8 - srcBit)
+		}
+		mask := byte((1<<uint(n))-1) << dstBit
+		bytePos := dstOffset / 8
+		dst[bytePos] = (dst[bytePos] &^ mask) | (((byte(value) ^ byte(invertMask)) << dstBit) & mask)
+		srcOffset += n
+		dstOffset += n
+		length -= n
+	}
+
+	nbytes := length / 8
+	srcByte, dstByte, srcBit := srcOffset/8, dstOffset/8, srcOffset%8
+
+	// Different initial bit offsets guarantee srcBit != 0 after aligning
+	// the destination, so an eight-byte read needs the following input byte.
+	for ; nbytes >= 8; nbytes -= 8 {
+		value := (binary.LittleEndian.Uint64(src[srcByte:]) >> srcBit) |
+			(uint64(src[srcByte+8]) << (64 - srcBit))
+		binary.LittleEndian.PutUint64(dst[dstByte:], value ^ invertMask)
+		srcByte += 8
+		dstByte += 8
+	}
+
+	for ; nbytes > 0; nbytes-- {
+		value := (src[srcByte] >> srcBit) | (src[srcByte+1] << (8 - srcBit))
+		dst[dstByte] = value ^ byte(invertMask)
+		srcByte++
+		dstByte++
+	}
+
+	if tailBits := length % 8; tailBits != 0 {
+		value := uint16(src[srcByte]) >> srcBit
+		if srcBit+tailBits > 8 {
+			value |= uint16(src[srcByte+1]) << (8 - srcBit)
+		}
+		mask := byte((1 << uint(tailBits)) - 1)
+		dst[dstByte] = (dst[dstByte] &^ mask) | ((byte(value) ^ byte(invertMask)) & mask)
+	}
 }
 
 // CopyBitmap copies the bitmap indicated by src, starting at bit offset srcOffset,

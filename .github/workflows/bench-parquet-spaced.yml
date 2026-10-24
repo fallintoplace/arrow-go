@@ -18,7 +18,7 @@ name: Parquet spaced encoder performance
 on:
   pull_request:
     paths:
-      - "parquet/internal/encoding/**"
+      - "parquet/internal/encoding/plain_spaced_batch_benchmark_test.go"
       - ".github/workflows/bench-parquet-spaced.yml"
   workflow_dispatch:
 
@@ -45,7 +45,7 @@ jobs:
         run: go test ./parquet/internal/encoding -run '^TestPlainSpacedBatch' -count=1 -timeout=10m
       - name: Benchmark baseline
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || 'main' }}
         run: |
           git worktree add --detach "$RUNNER_TEMP/arrow-go-base" "$BASE_SHA"
           cp parquet/internal/encoding/plain_spaced_batch_benchmark_test.go "$RUNNER_TEMP/arrow-go-base/parquet/internal/encoding/"

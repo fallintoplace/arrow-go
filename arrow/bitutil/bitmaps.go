@@ -416,8 +416,7 @@ const (
 	transferInvert
 )
 
-
- // transferBitmapUnaligned copies full destination bytes in bulk, handling only
+// transferBitmapUnaligned copies full destination bytes in bulk, handling only
  // the first and last partial bytes separately. The caller has checked buffer
  // bounds and snapshotted any overlapping source and destination byte spans.
 func transferBitmapUnaligned(mode transferMode, src []byte, srcOffset, length int, dst []byte, dstOffset int) {

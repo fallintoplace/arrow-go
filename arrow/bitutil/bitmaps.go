@@ -415,6 +415,56 @@ const (
 	transferInvert
 )
 
+// invertBitmapBytes inverts whole uint64 words before handling the tail.
+// transferBitmap ensures any overlapping source has already been copied.
+func invertBitmapBytes(dst, src []byte) {
+	fullBytes := len(src) &^ 7
+	srcWords := bytesToUint64(src[:fullBytes])
+	dstWords := bytesToUint64(dst[:fullBytes])
+	for i, word := range srcWords {
+		dstWords[i] = ^word
+	}
+	for i := fullBytes; i < len(src); i++ {
+		dst[i] = ^src[i]
+	}
+}
+
+// transferBitmapMatchingOffsets copies a range with the same bit offset
+// in its source and destination bytes. transferBitmap already handles overlap.
+func transferBitmapMatchingOffsets(mode transferMode, src []byte, srcOffset, length int, dst []byte, dstOffset int) {
+	bitOffset := srcOffset % 8
+	src = src[srcOffset/8:]
+	dst = dst[dstOffset/8:]
+
+	leading := min(length, 8-bitOffset)
+	mask := byte((1<<leading)-1) << bitOffset
+	value := src[0]
+	if mode == transferInvert {
+		value = ^value
+	}
+	dst[0] = (dst[0] &^ mask) | (value & mask)
+	length -= leading
+	if length == 0 {
+		return
+	}
+	src, dst = src[1:], dst[1:]
+
+	wholeBytes := length / 8
+	if mode == transferInvert {
+		invertBitmapBytes(dst[:wholeBytes], src[:wholeBytes])
+	} else {
+		copy(dst[:wholeBytes], src[:wholeBytes])
+	}
+	if tail := length & 7; tail != 0 {
+		mask := byte(1<<tail) - 1
+		value := src[wholeBytes]
+		if mode == transferInvert {
+			value = ^value
+		}
+		dst[wholeBytes] = (dst[wholeBytes] &^ mask) | (value & mask)
+	}
+}
+
 func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []byte, dstOffset int) {
 	if length == 0 {
 		// if there's nothing to write, end early.
@@ -445,6 +495,12 @@ func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []
 
 	// slow path, one of the bitmaps are not byte aligned.
 	if bitOffset != 0 || destBitOffset != 0 {
+		// Matching bit offsets can be copied a byte at a time. Preserve the
+		// partial first and last bytes without shifting the middle bytes.
+		if bitOffset == destBitOffset {
+			transferBitmapMatchingOffsets(mode, src, srcOffset, length, dst, dstOffset)
+			return
+		}
 		rdr := NewBitmapWordReader(src, srcOffset, length)
 		wr := NewBitmapWordWriter(dst, dstOffset, length)
 
@@ -484,9 +540,7 @@ func transferBitmap(mode transferMode, src []byte, srcOffset, length int, dst []
 	trailMask := byte(uint(1)<<(8-trailingBits)) - 1
 	var lastData byte
 	if mode == transferInvert {
-		for i, b := range src[:nbytes-1] {
-			dst[i] = ^b
-		}
+		invertBitmapBytes(dst[:nbytes-1], src[:nbytes-1])
 		lastData = ^src[nbytes-1]
 	} else {
 		copy(dst, src[:nbytes-1])
@@ -673,6 +727,38 @@ func BitmapEquals(left, right []byte, lOffset, rOffset int64, length int64) bool
 			if BitIsSet(left, int(lOffset+i)) != BitIsSet(right, int(rOffset+i)) {
 				return false
 			}
+		}
+		return true
+	}
+
+	// Equal, nonzero bit offsets share byte boundaries. Compare the first
+	// partial byte with a mask, then use memcmp for the full byte range.
+	if lOffset%8 == rOffset%8 && length > 0 {
+		bitOffset := lOffset % 8
+		left = left[lOffset/8:]
+		right = right[rOffset/8:]
+
+		leading := int64(8 - bitOffset)
+		if length < leading {
+			leading = length
+		}
+		mask := byte((1<<leading)-1) << bitOffset
+		if (left[0]^right[0])&mask != 0 {
+			return false
+		}
+		length -= leading
+		if length == 0 {
+			return true
+		}
+		left, right = left[1:], right[1:]
+
+		wholeBytes := length / 8
+		if !bytes.Equal(left[:wholeBytes], right[:wholeBytes]) {
+			return false
+		}
+		if tail := length & 7; tail != 0 {
+			mask := byte(1<<tail) - 1
+			return (left[wholeBytes]^right[wholeBytes])&mask == 0
 		}
 		return true
 	}

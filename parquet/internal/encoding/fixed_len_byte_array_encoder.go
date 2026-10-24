@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/internal/hashing"
 	"github.com/apache/arrow-go/v18/parquet"
@@ -41,9 +42,12 @@ func (enc *PlainFixedLenByteArrayEncoder) Put(in []parquet.FixedLenByteArray) {
 		return
 	}
 
-	bytesNeeded := len(in) * typeLen
-	enc.sink.Reserve(bytesNeeded)
+	enc.sink.Reserve(len(in) * typeLen)
+	enc.putPlainValues(in, typeLen)
+}
 
+// putPlainValues writes values into an already-reserved buffer.
+func (enc *PlainFixedLenByteArrayEncoder) putPlainValues(in []parquet.FixedLenByteArray, typeLen int) {
 	for _, val := range in {
 		if val == nil {
 			if len(enc.zeroValue) != typeLen {
@@ -76,23 +80,76 @@ func (enc *PlainFixedLenByteArrayEncoder) Release() {
 }
 
 // PutSpaced is like Put but works with data that is spaced out according to the passed in bitmap
+// preferPlainSpacedRuns keeps the bulk-copy path when validity includes long
+// contiguous runs. Sparse, fragmented bitmaps benefit from direct bit tests.
+func preferPlainSpacedRuns(validBits []byte, validBitsOffset int64, n int) bool {
+	if n < 256 {
+		return true
+	}
+	lo := int((validBitsOffset + 7) / 8)
+	hi := int((validBitsOffset + int64(n)) / 8)
+	sampled := min(32, hi-lo)
+	if sampled <= 0 {
+		return true
+	}
+	full := 0
+	for _, b := range validBits[lo : lo+sampled] {
+		if b == 0xff {
+			full++
+		}
+	}
+	return full >= max(2, sampled/8)
+}
+
+// PutSpaced is like Put but works with data that is spaced out according to the passed in bitmap.
 func (enc *PlainFixedLenByteArrayEncoder) PutSpaced(in []parquet.FixedLenByteArray, validBits []byte, validBitsOffset int64) {
-	if validBits != nil {
+	if validBits == nil {
+		enc.Put(in)
+		return
+	}
+	typeLen := enc.descr.TypeLength()
+	if typeLen == 0 {
+		return
+	}
+	if preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
 		if enc.bitSetReader == nil {
 			enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
 		} else {
 			enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
 		}
-
 		for {
 			run := enc.bitSetReader.NextRun()
 			if run.Length == 0 {
 				break
 			}
-			enc.Put(in[int(run.Pos):int(run.Pos+run.Length)])
+			enc.Put(in[run.Pos : run.Pos+run.Length])
 		}
-	} else {
+		return
+	}
+
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), len(in))
+	if validCount == 0 {
+		return
+	}
+	if validCount == len(in) {
 		enc.Put(in)
+		return
+	}
+	enc.sink.Reserve(validCount * typeLen)
+
+	for i, val := range in {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
+		}
+		if val == nil {
+			if len(enc.zeroValue) != typeLen {
+				enc.zeroValue = make([]byte, typeLen)
+			}
+			enc.sink.UnsafeWrite(enc.zeroValue)
+		} else {
+			enc.sink.UnsafeWrite(val[:typeLen])
+		}
 	}
 }
 
@@ -107,22 +164,46 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 		panic("parquet: Arrow fixed-length values are not aligned to the type length")
 	}
 
-	nvalues := int64(len(values) / enc.typeLen)
-	if enc.bitSetReader == nil {
-		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, nvalues)
-	} else {
-		enc.bitSetReader.Reset(validBits, validBitsOffset, nvalues)
+	nvalues := len(values) / enc.typeLen
+	if preferPlainSpacedRuns(validBits, validBitsOffset, nvalues) {
+		if enc.bitSetReader == nil {
+			enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(nvalues))
+		} else {
+			enc.bitSetReader.Reset(validBits, validBitsOffset, int64(nvalues))
+		}
+		for {
+			run := enc.bitSetReader.NextRun()
+			if run.Length == 0 {
+				break
+			}
+			start := int(run.Pos) * enc.typeLen
+			end := int(run.Pos+run.Length) * enc.typeLen
+			enc.PutArrow(values[start:end])
+		}
+		return
 	}
 
-	for {
-		run := enc.bitSetReader.NextRun()
-		if run.Length == 0 {
-			break
-		}
-		start := int(run.Pos) * enc.typeLen
-		end := int(run.Pos+run.Length) * enc.typeLen
-		enc.PutArrow(values[start:end])
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues)
+	if validCount == 0 {
+		return
 	}
+	if validCount == nvalues {
+		enc.PutArrow(values)
+		return
+	}
+	enc.sink.Reserve(validCount * enc.typeLen)
+
+	out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+validCount*enc.typeLen]
+	for i := 0; i < nvalues; i++ {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
+		}
+		start := i * enc.typeLen
+		copy(out[:enc.typeLen], values[start:start+enc.typeLen])
+		out = out[enc.typeLen:]
+	}
+	enc.sink.pos += validCount * enc.typeLen
 }
 
 // Type returns the underlying physical type this encoder works with, Fixed Length byte arrays.

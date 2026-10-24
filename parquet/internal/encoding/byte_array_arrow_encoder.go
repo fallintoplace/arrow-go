@@ -19,6 +19,7 @@ package encoding
 import (
 	"encoding/binary"
 
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/parquet"
 )
@@ -48,6 +49,10 @@ func putArrowPlain[T arrowByteArrayOffset](sink *PooledBufferWriter, values []by
 	sink.pos += encodedSize
 }
 
+// Bound speculative reservations so sparse pages cannot retain arbitrarily
+// large output buffers. Larger batches use the normal per-run writer.
+const plainSpacedMaxReserve = 8 << 20
+
 func putArrowPlainSpaced[T arrowByteArrayOffset](sink *PooledBufferWriter, values []byte, offsets []T, validBits []byte, validBitsOffset int64) {
 	if len(offsets) < 2 {
 		return
@@ -57,9 +62,39 @@ func putArrowPlainSpaced[T arrowByteArrayOffset](sink *PooledBufferWriter, value
 		return
 	}
 
-	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(offsets)-1), func(pos, length int64) {
-		putArrowPlain(sink, values, offsets[pos:pos+length+1])
-	})
+	nvalues := len(offsets) - 1
+	upperBound := 4*nvalues + int(offsets[nvalues]-offsets[0])
+	if upperBound > plainSpacedMaxReserve || preferPlainSpacedRuns(validBits, validBitsOffset, nvalues) {
+		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(nvalues), func(pos, length int64) {
+			putArrowPlain(sink, values, offsets[pos:pos+length+1])
+		})
+		return
+	}
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues)
+	if validCount == 0 {
+		return
+	}
+	if validCount == nvalues {
+		putArrowPlain(sink, values, offsets)
+		return
+	}
+
+	// Reserve a bounded upper bound once, then encode selected values in a
+	// single pass. Visiting a set-bit run for each isolated non-null value
+	// costs more than checking the bitmap directly on fragmented pages.
+	sink.Reserve(upperBound)
+	out := sink.buf.Buf()[sink.pos : sink.pos+upperBound]
+	for i := 0; i < nvalues; i++ {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
+		}
+		start, end := int(offsets[i]), int(offsets[i+1])
+		binary.LittleEndian.PutUint32(out, uint32(end-start))
+		copy(out[4:], values[start:end])
+		out = out[4+end-start:]
+	}
+	sink.pos += upperBound - len(out)
 }
 
 func (enc *PlainByteArrayEncoder) PutArrow(values []byte, offsets []int32) {

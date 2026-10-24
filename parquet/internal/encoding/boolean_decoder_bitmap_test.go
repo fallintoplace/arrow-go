@@ -170,11 +170,17 @@ func TestRleBooleanDecoderDecodeToBitmapTruncatedLiteral(t *testing.T) {
 }
 
 func TestRleBooleanDecoderDecodeInChunks(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		dec := newRleBooleanBitmapDecoder(t, 0, []byte{0, 0, 0, 0})
+		n, err := dec.Decode(nil)
+		require.NoError(t, err)
+		require.Zero(t, n)
+		assert.Zero(t, dec.ValuesLeft())
+	})
 	patterns := []struct {
 		name   string
 		values []bool
 	}{
-		{name: "empty", values: []bool{}},
 		{name: "all_true", values: makeBooleanValues(2048, func(int) bool { return true })},
 		{name: "all_false", values: makeBooleanValues(2048, func(int) bool { return false })},
 		{name: "alternating", values: makeBooleanValues(2048, func(i int) bool { return i%2 == 0 })},

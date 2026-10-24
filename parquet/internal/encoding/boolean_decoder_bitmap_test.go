@@ -174,7 +174,7 @@ func TestRleBooleanDecoderDecodeInChunks(t *testing.T) {
 		name   string
 		values []bool
 	}{
-		{name: "empty", values: nil},
+		{name: "empty", values: []bool{}},
 		{name: "all_true", values: makeBooleanValues(2048, func(int) bool { return true })},
 		{name: "all_false", values: makeBooleanValues(2048, func(int) bool { return false })},
 		{name: "alternating", values: makeBooleanValues(2048, func(i int) bool { return i%2 == 0 })},

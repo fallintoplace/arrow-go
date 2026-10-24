@@ -80,6 +80,12 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		enc.Put(in)
 		return
 	}
+	if preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
+		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
+			enc.Put(in[pos : pos+length])
+		})
+		return
+	}
 
 	// Most pages fit within a bounded upper estimate. Reserving once lets us
 	// check individual validity bits without constructing thousands of short

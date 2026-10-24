@@ -137,14 +137,11 @@ func (b *FixedSizeBinaryBuilder) AppendValues(v [][]byte, valid []bool) {
 	b.values.Advance(len(v) * width)
 	data := b.values.Bytes()[start:]
 	for i, value := range v {
-		slot := data[i*width : (i+1)*width]
 		switch len(value) {
 		case 0:
-			// Zero-length input means an empty fixed-width slot, even when
-			// reusing buffers after a builder resize.
-			clear(slot)
+			// Preserve Advance semantics for empty fixed-width slots.
 		case width:
-			copy(slot, value)
+			copy(data[i*width:], value)
 		default:
 			panic(fmt.Errorf("array: invalid binary length (got=%d, want=%d)", len(value), width))
 		}

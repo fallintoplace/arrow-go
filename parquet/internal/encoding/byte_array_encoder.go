@@ -23,6 +23,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/bitutil"
 	"github.com/apache/arrow-go/v18/internal/bitutils"
 	"github.com/apache/arrow-go/v18/internal/hashing"
 	"github.com/apache/arrow-go/v18/internal/utils"
@@ -34,7 +35,6 @@ import (
 type PlainByteArrayEncoder struct {
 	encoder
 
-	bitSetReader bitutils.SetBitRunReader
 }
 
 // PutByteArray writes out the 4 bytes for the length followed by the data
@@ -72,45 +72,41 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		enc.Put(in)
 		return
 	}
-
-	// Reuse the run reader across batches and both passes. This avoids
-	// allocations and repeated buffer reservations for fragmented validity.
-	if enc.bitSetReader == nil {
-		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
-	} else {
-		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
-	}
-
-	encodedSize := 0
-	for {
-		run := enc.bitSetReader.NextRun()
-		if run.Length == 0 {
-			break
-		}
-		encodedSize += int(run.Length) * arrow.Uint32SizeBytes
-		for _, value := range in[run.Pos : run.Pos+run.Length] {
-			encodedSize += len(value)
-		}
-	}
-	if encodedSize == 0 {
+	if bitutil.CountSetBits(validBits, int(validBitsOffset), len(in)) == 0 {
 		return
 	}
 
-	enc.sink.Reserve(encodedSize)
-	out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+encodedSize]
-	enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
-	for {
-		run := enc.bitSetReader.NextRun()
-		if run.Length == 0 {
-			break
-		}
-		for _, value := range in[run.Pos : run.Pos+run.Length] {
-			binary.LittleEndian.PutUint32(out, uint32(len(value)))
-			copy(out[arrow.Uint32SizeBytes:], value)
-			out = out[arrow.Uint32SizeBytes+len(value):]
+	// Most pages fit within a bounded upper estimate. Reserving once lets us
+	// check individual validity bits without constructing thousands of short
+	// runs for alternating or sparse null patterns.
+	upperBound := len(in) * arrow.Uint32SizeBytes
+	if upperBound <= plainSpacedMaxReserve {
+		for _, value := range in {
+			upperBound += len(value)
+			if upperBound > plainSpacedMaxReserve {
+				break
+			}
 		}
 	}
-	enc.sink.pos += encodedSize
+	if upperBound > plainSpacedMaxReserve {
+		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
+			enc.Put(in[pos : pos+length])
+		})
+		return
+	}
+
+	enc.sink.Reserve(upperBound)
+	out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+upperBound]
+	for i, value := range in {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
+		}
+		binary.LittleEndian.PutUint32(out, uint32(len(value)))
+		copy(out[arrow.Uint32SizeBytes:], value)
+		out = out[arrow.Uint32SizeBytes+len(value):]
+	}
+	enc.sink.pos += upperBound - len(out)
 }
 
 // Type returns parquet.Types.ByteArray for the bytearray encoder

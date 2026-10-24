@@ -17,11 +17,11 @@
 package decimalparse
 
 // ExactScaledUint64 parses a plain decimal as an integer coefficient scaled
-// by 10^scale without allocating. Inputs requiring rounding, exceeding 18
+// by 10^scale without allocating. Inputs requiring rounding, exceeding 19
 // scaled digits, or using exponent notation must use the caller's slow path.
 // An unsuccessful parse never changes the caller's error semantics.
 func ExactScaledUint64(value string, scale int32) (magnitude uint64, negative bool, ok bool) {
-	if scale < 0 || scale > 76 || len(value) == 0 {
+	if scale < 0 || scale > 76 || len(value) == 0 || len(value) > 21 {
 		return 0, false, false
 	}
 
@@ -49,7 +49,7 @@ func ExactScaledUint64(value string, scale int32) (magnitude uint64, negative bo
 			return 0, false, false
 		}
 		digits++
-		if digits > 18 {
+		if digits > 19 {
 			return 0, false, false
 		}
 		magnitude = magnitude*10 + uint64(c-'0')
@@ -59,7 +59,7 @@ func ExactScaledUint64(value string, scale int32) (magnitude uint64, negative bo
 	}
 
 	padding := int(scale) - fractional
-	if digits == 0 || padding < 0 || digits+padding > 18 {
+	if digits == 0 || padding < 0 || digits+padding > 19 {
 		return 0, false, false
 	}
 	for range padding {

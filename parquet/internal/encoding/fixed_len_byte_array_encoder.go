@@ -111,6 +111,21 @@ func (enc *PlainFixedLenByteArrayEncoder) PutSpaced(in []parquet.FixedLenByteArr
 	if typeLen == 0 {
 		return
 	}
+	if preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
+		if enc.bitSetReader == nil {
+			enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
+		} else {
+			enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
+		}
+		for {
+			run := enc.bitSetReader.NextRun()
+			if run.Length == 0 {
+				break
+			}
+			enc.Put(in[run.Pos : run.Pos+run.Length])
+		}
+		return
+	}
 
 	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), len(in))
 	if validCount == 0 {
@@ -122,35 +137,19 @@ func (enc *PlainFixedLenByteArrayEncoder) PutSpaced(in []parquet.FixedLenByteArr
 	}
 	enc.sink.Reserve(validCount * typeLen)
 
-	if !preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
-		for i, val := range in {
-			bit := int(validBitsOffset) + i
-			if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
-				continue
-			}
-			if val == nil {
-				if len(enc.zeroValue) != typeLen {
-					enc.zeroValue = make([]byte, typeLen)
-				}
-				enc.sink.UnsafeWrite(enc.zeroValue)
-			} else {
-				enc.sink.UnsafeWrite(val[:typeLen])
-			}
+	for i, val := range in {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
 		}
-		return
-	}
-
-	if enc.bitSetReader == nil {
-		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
-	} else {
-		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
-	}
-	for {
-		run := enc.bitSetReader.NextRun()
-		if run.Length == 0 {
-			break
+		if val == nil {
+			if len(enc.zeroValue) != typeLen {
+				enc.zeroValue = make([]byte, typeLen)
+			}
+			enc.sink.UnsafeWrite(enc.zeroValue)
+		} else {
+			enc.sink.UnsafeWrite(val[:typeLen])
 		}
-		enc.putPlainValues(in[run.Pos:run.Pos+run.Length], typeLen)
 	}
 }
 
@@ -166,6 +165,24 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 	}
 
 	nvalues := len(values) / enc.typeLen
+	if preferPlainSpacedRuns(validBits, validBitsOffset, nvalues) {
+		if enc.bitSetReader == nil {
+			enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(nvalues))
+		} else {
+			enc.bitSetReader.Reset(validBits, validBitsOffset, int64(nvalues))
+		}
+		for {
+			run := enc.bitSetReader.NextRun()
+			if run.Length == 0 {
+				break
+			}
+			start := int(run.Pos) * enc.typeLen
+			end := int(run.Pos+run.Length) * enc.typeLen
+			enc.PutArrow(values[start:end])
+		}
+		return
+	}
+
 	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues)
 	if validCount == 0 {
 		return
@@ -176,35 +193,17 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 	}
 	enc.sink.Reserve(validCount * enc.typeLen)
 
-	if !preferPlainSpacedRuns(validBits, validBitsOffset, nvalues) {
-		out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+validCount*enc.typeLen]
-		for i := 0; i < nvalues; i++ {
-			bit := int(validBitsOffset) + i
-			if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
-				continue
-			}
-			start := i * enc.typeLen
-			copy(out[:enc.typeLen], values[start:start+enc.typeLen])
-			out = out[enc.typeLen:]
+	out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+validCount*enc.typeLen]
+	for i := 0; i < nvalues; i++ {
+		bit := int(validBitsOffset) + i
+		if validBits[bit>>3]&(1<<uint(bit&7)) == 0 {
+			continue
 		}
-		enc.sink.pos += validCount * enc.typeLen
-		return
+		start := i * enc.typeLen
+		copy(out[:enc.typeLen], values[start:start+enc.typeLen])
+		out = out[enc.typeLen:]
 	}
-
-	if enc.bitSetReader == nil {
-		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(nvalues))
-	} else {
-		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(nvalues))
-	}
-	for {
-		run := enc.bitSetReader.NextRun()
-		if run.Length == 0 {
-			break
-		}
-		start := int(run.Pos) * enc.typeLen
-		end := int(run.Pos+run.Length) * enc.typeLen
-		enc.sink.UnsafeWrite(values[start:end])
-	}
+	enc.sink.pos += validCount * enc.typeLen
 }
 
 // Type returns the underlying physical type this encoder works with, Fixed Length byte arrays.

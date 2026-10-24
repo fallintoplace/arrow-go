@@ -73,28 +73,43 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		return
 	}
 
-	// Size the encoded batch once. Reserving for each valid run is expensive
-	// when the validity bitmap contains many short runs.
+	// Reuse the run reader across batches and both passes. This avoids
+	// allocations and repeated buffer reservations for fragmented validity.
+	if enc.bitSetReader == nil {
+		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
+	} else {
+		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
+	}
+
 	encodedSize := 0
-	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
-		encodedSize += int(length) * arrow.Uint32SizeBytes
-		for _, value := range in[pos : pos+length] {
+	for {
+		run := enc.bitSetReader.NextRun()
+		if run.Length == 0 {
+			break
+		}
+		encodedSize += int(run.Length) * arrow.Uint32SizeBytes
+		for _, value := range in[run.Pos : run.Pos+run.Length] {
 			encodedSize += len(value)
 		}
-	})
+	}
 	if encodedSize == 0 {
 		return
 	}
 
 	enc.sink.Reserve(encodedSize)
 	out := enc.sink.buf.Buf()[enc.sink.pos : enc.sink.pos+encodedSize]
-	bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
-		for _, value := range in[pos : pos+length] {
+	enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
+	for {
+		run := enc.bitSetReader.NextRun()
+		if run.Length == 0 {
+			break
+		}
+		for _, value := range in[run.Pos : run.Pos+run.Length] {
 			binary.LittleEndian.PutUint32(out, uint32(len(value)))
 			copy(out[arrow.Uint32SizeBytes:], value)
 			out = out[arrow.Uint32SizeBytes+len(value):]
 		}
-	})
+	}
 	enc.sink.pos += encodedSize
 }
 

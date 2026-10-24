@@ -34,8 +34,8 @@ func TestTransferBitmapDirectOffsets(t *testing.T) {
 		{"invert", true, bitutil.InvertBitmap},
 	}
 	layouts := []struct {
-		name                string
-		separate            bool
+		name               string
+		separate           bool
 		srcSlice, dstSlice int
 	}{
 		{name: "separate", separate: true},

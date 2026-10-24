@@ -252,12 +252,13 @@ func (r *RleDecoder) GetBatchBools(out []bool) (int, error) {
 
 		if r.repCount > 0 {
 			n := min(remain, int(r.repCount))
+			dst := out[read : read+n]
 			if r.curVal != 0 {
-				for i := range out[read : read+n] {
-					out[read+i] = true
+				for i := range dst {
+					dst[i] = true
 				}
 			} else {
-				clear(out[read : read+n])
+				clear(dst)
 			}
 			r.repCount -= int32(n)
 			read += n

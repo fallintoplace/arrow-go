@@ -116,6 +116,10 @@ func (enc *PlainFixedLenByteArrayEncoder) PutSpaced(in []parquet.FixedLenByteArr
 	if validCount == 0 {
 		return
 	}
+	if validCount == len(in) {
+		enc.Put(in)
+		return
+	}
 	enc.sink.Reserve(validCount * typeLen)
 
 	if !preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
@@ -164,6 +168,10 @@ func (enc *PlainFixedLenByteArrayEncoder) PutArrowSpaced(values []byte, validBit
 	nvalues := len(values) / enc.typeLen
 	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues)
 	if validCount == 0 {
+		return
+	}
+	if validCount == nvalues {
+		enc.PutArrow(values)
 		return
 	}
 	enc.sink.Reserve(validCount * enc.typeLen)

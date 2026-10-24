@@ -70,7 +70,12 @@ func putArrowPlainSpaced[T arrowByteArrayOffset](sink *PooledBufferWriter, value
 		})
 		return
 	}
-	if bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues) == 0 {
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), nvalues)
+	if validCount == 0 {
+		return
+	}
+	if validCount == nvalues {
+		putArrowPlain(sink, values, offsets)
 		return
 	}
 

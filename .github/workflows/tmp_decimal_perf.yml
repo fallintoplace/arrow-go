@@ -1,0 +1,41 @@
+# Temporary before/after benchmark runner. Remove after recording results.
+name: Decimal parsing perf comparison
+on:
+  push:
+    branches:
+      - perf/decimal-parse-exact-u64-20261024-c5e72
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Version and focused tests
+        run: |
+          go version
+          grep -m1 'model name' /proc/cpuinfo || true
+          go test ./arrow/internal/decimalparse ./arrow/decimal128 ./arrow/decimal256 -count=1
+      - name: Before and after benchmarks on one runner
+        env:
+          BASE_SHA: 2440af8a4d1b87f5e424d5c0c5f83959a9aebdb3
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/arrow-before" "$BASE_SHA"
+          for p in decimal128 decimal256; do
+            cp "arrow/$p/fast_parse_test.go" "$RUNNER_TEMP/arrow-before/arrow/$p/fast_parse_test.go"
+          done
+          cd "$RUNNER_TEMP/arrow-before"
+          go test ./arrow/decimal128 ./arrow/decimal256 -run '^$' -bench '^BenchmarkFastDecimalStringParse$' -benchmem -benchtime=150ms -count=5 | tee "$RUNNER_TEMP/before.log"
+          cd "$GITHUB_WORKSPACE"
+          go test ./arrow/decimal128 ./arrow/decimal256 -run '^$' -bench '^BenchmarkFastDecimalStringParse$' -benchmem -benchtime=150ms -count=5 | tee "$RUNNER_TEMP/after.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decimal-parsing-before-after
+          path: ${{ runner.temp }}/*.log

@@ -106,8 +106,8 @@ func BenchmarkTransferBitmapDirectOffsets(b *testing.B) {
 		{"invert", transferInvert},
 	}
 	offsets := []struct {
-		name       string
-		src, dst   int
+		name     string
+		src, dst int
 	}{
 		{"aligned", 0, 0},
 		{"same-3", 3, 3},
@@ -127,9 +127,9 @@ func BenchmarkTransferBitmapDirectOffsets(b *testing.B) {
 							for i := range src {
 								src[i] = byte(i*137 + 53)
 							}
-							b.SetBytes(int64(nbits / 8))
 							for _, variant := range []string{"before", "after"} {
 								b.Run(variant, func(b *testing.B) {
+									b.SetBytes(int64(nbits / 8))
 									b.ReportAllocs()
 									if variant == "before" {
 										for b.Loop() {

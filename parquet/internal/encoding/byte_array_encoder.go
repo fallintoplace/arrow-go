@@ -72,7 +72,12 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		enc.Put(in)
 		return
 	}
-	if bitutil.CountSetBits(validBits, int(validBitsOffset), len(in)) == 0 {
+	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), len(in))
+	if validCount == 0 {
+		return
+	}
+	if validCount == len(in) {
+		enc.Put(in)
 		return
 	}
 

@@ -1,0 +1,59 @@
+name: Binary builder before-after benchmark
+on:
+  push:
+    branches:
+      - benchmark/binary-direct-20261024
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run full 96-case benchmark matrix
+        shell: bash
+        env:
+          BEFORE_SHA: 2440af8a4d1b87f5e424d5c0c5f83959a9aebdb3
+          AFTER_SHA: 7996b36c307daebcd2b8bab64d69b28f93c77188
+        run: |
+          set -euo pipefail
+          echo "Machine: $(uname -sm)"
+          lscpu | grep -E 'Model name|CPU\(s\)|Architecture'
+          go version
+          git fetch https://github.com/apache/arrow-go.git "$BEFORE_SHA" --depth 1
+          git checkout --detach "$BEFORE_SHA"
+          echo "Before: $(git rev-parse HEAD)"
+          go test ./arrow/array -run '^$' -bench '^BenchmarkBinaryBuilderAppendValues$' -benchmem -benchtime=100ms -count=3 -timeout=25m | tee /tmp/arrow_before.txt
+          git checkout --detach "$AFTER_SHA"
+          echo "After: $(git rev-parse HEAD)"
+          go test ./arrow/array -run '^$' -bench '^BenchmarkBinaryBuilderAppendValues$' -benchmem -benchtime=100ms -count=3 -timeout=25m | tee /tmp/arrow_after.txt
+          python3 - <<'PY'
+          import collections, statistics
+          def load(filename):
+              rows=collections.defaultdict(list)
+              for ln in open(filename):
+                  f=ln.split()
+                  if not f or not f[0].startswith("BenchmarkBinaryBuilderAppendValues/"):
+                      continue
+                  name=f[0].rsplit("-",1)[0].removeprefix("BenchmarkBinaryBuilderAppendValues/")
+                  rows[name].append((float(f[f.index("ns/op")-1]),int(f[f.index("B/op")-1]),int(f[f.index("allocs/op")-1])))
+              assert len(rows)==96,(filename,len(rows))
+              assert all(len(samples)==3 for samples in rows.values())
+              return {name:tuple(statistics.median(s[i] for s in samples) for i in range(3)) for name,samples in rows.items()}
+          before=load("/tmp/arrow_before.txt")
+          after=load("/tmp/arrow_after.txt")
+          print("FULL 96-CASE MEDIAN RESULTS: case | before ns/op | after ns/op | speedup | before B/op | after B/op | before allocs/op | after allocs/op",flush=True)
+          for name in sorted(before):
+              a, c = before[name],after[name]
+              print(f"{name} | {a[0]:.1f} | {c[0]:.1f} | {a[0]/c[0]:.2f}x | {a[1]:.0f} | {c[1]:.0f} | {a[2]:.0f} | {c[2]:.0f}",flush=True)
+          wins=sum(after[name][0]<before[name][0] for name in before)
+          ratios=[before[name][0]/after[name][0] for name in before]
+          print(f"SUMMARY: {wins}/96 faster; median speedup {statistics.median(ratios):.3f}x; min {min(ratios):.3f}x; max {max(ratios):.3f}x",flush=True)
+          PY

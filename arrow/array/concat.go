@@ -152,6 +152,90 @@ func concatBuffers(bufs []*memory.Buffer, mem memory.Allocator) *memory.Buffer {
 	return out
 }
 
+// contiguousFixedWidthBytes finds the physical range behind adjacent slices of
+// one buffer. The returned bytes are only borrowed; callers copy them into the
+// destination so Concatenate retains its usual independent output ownership.
+func contiguousFixedWidthBytes(data []arrow.ArrayData, idx, width int) ([]byte, bool) {
+	var shared *memory.Buffer
+	var start, end int
+	for _, d := range data {
+		if d.Len() == 0 {
+			continue
+		}
+
+		buf := d.Buffers()[idx]
+		if buf == nil {
+			return nil, false
+		}
+		begin := d.Offset() * width
+		next := begin + d.Len()*width
+		if shared == nil {
+			shared, start = buf, begin
+		} else if buf != shared || begin != end {
+			return nil, false
+		}
+		end = next
+	}
+	if shared == nil {
+		return nil, true
+	}
+	return shared.Bytes()[start:end], true
+}
+
+// contiguousRangeBytes handles variable-width data buffers, where the logical
+// value ranges are derived from the offsets rather than the parent row offsets.
+func contiguousRangeBytes(data []arrow.ArrayData, idx int, ranges []rng) ([]byte, bool) {
+	var shared *memory.Buffer
+	var start, end int
+	for i, d := range data {
+		r := ranges[i]
+		if r.len == 0 {
+			continue
+		}
+		buf := d.Buffers()[idx]
+		if buf == nil {
+			return nil, false
+		}
+		if shared == nil {
+			shared, start = buf, r.offset
+		} else if buf != shared || r.offset != end {
+			return nil, false
+		}
+		end = r.offset + r.len
+	}
+	if shared == nil {
+		return nil, true
+	}
+	return shared.Bytes()[start:end], true
+}
+
+// contiguousBitmap finds a single bitmap backing consecutive input slices.
+// It is deliberately not used when a null bitmap is absent: a missing bitmap
+// represents all-valid bits, not a physical run in the neighboring buffer.
+func contiguousBitmap(data []arrow.ArrayData, idx int) ([]byte, int, bool) {
+	var shared *memory.Buffer
+	var start, end int
+	for _, d := range data {
+		if d.Len() == 0 {
+			continue
+		}
+		buf := d.Buffers()[idx]
+		if buf == nil {
+			return nil, 0, false
+		}
+		if shared == nil {
+			shared, start = buf, d.Offset()
+		} else if buf != shared || d.Offset() != end {
+			return nil, 0, false
+		}
+		end = d.Offset() + d.Len()
+	}
+	if shared == nil {
+		return nil, 0, true
+	}
+	return shared.Bytes(), start, true
+}
+
 func concatFixedWidthBuffers(data []arrow.ArrayData, idx, byteWidth, length int, mem memory.Allocator) *memory.Buffer {
 	out := memory.NewResizableBuffer(mem)
 	success := false
@@ -162,6 +246,15 @@ func concatFixedWidthBuffers(data []arrow.ArrayData, idx, byteWidth, length int,
 	}()
 	out.Resize(length * byteWidth)
 	dst := out.Bytes()
+	// Rechunking slices of one array can use one large memcpy instead of a
+	// separate copy for every slice. The scan pays off for many small chunks.
+	if len(data) >= 16 {
+		if src, ok := contiguousFixedWidthBytes(data, idx, byteWidth); ok {
+			copy(dst, src)
+			success = true
+			return out
+		}
+	}
 	for _, d := range data {
 		buf := d.Buffers()[idx]
 		if buf == nil {
@@ -205,6 +298,12 @@ func concatBinaryBuffers(data []arrow.ArrayData, byteWidth, length int, out *Dat
 	out.buffers[2] = valueBuffer
 	valueBuffer.Resize(valueLength)
 	dst := valueBuffer.Bytes()
+	if len(data) >= 16 {
+		if src, ok := contiguousRangeBytes(data, 2, valueRanges); ok {
+			copy(dst, src)
+			return nil
+		}
+	}
 	for i, d := range data {
 		r := valueRanges[i]
 		if r.len == 0 {
@@ -869,6 +968,16 @@ func concatBitmaps(data []arrow.ArrayData, idx int, mem memory.Allocator) (*memo
 	}()
 	out.Resize(int(bitutil.BytesForBits(int64(outlen))))
 	dst := out.Bytes()
+
+	// Copy the complete bitmap run once when adjacent slices share storage.
+	// This avoids thousands of per-chunk bitmap transfers on rechunked arrays.
+	if len(data) >= 16 && outlen > 0 {
+		if src, offset, ok := contiguousBitmap(data, idx); ok {
+			bitutil.CopyBitmap(src, offset, outlen, dst, 0)
+			success = true
+			return out, nil
+		}
+	}
 
 	offset := 0
 	for _, d := range data {

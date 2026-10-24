@@ -658,44 +658,89 @@ func BitmapXnorAlloc(mem memory.Allocator, left, right []byte, lOffset, rOffset 
 	return BitmapOpAlloc(mem, bitXnorOp, left, right, lOffset, rOffset, length, outOffset)
 }
 
+// BitmapEquals compares the logical bit ranges, ignoring unused bits in the
+// leading and trailing bytes. Matching intra-byte offsets can be compared with
+// bytes.Equal, while other offsets are compared as shifted 64-bit words.
 func BitmapEquals(left, right []byte, lOffset, rOffset int64, length int64) bool {
-	if lOffset%8 == 0 && rOffset%8 == 0 {
-		// byte aligned, fast path, can use bytes.Equal (memcmp)
-		byteLen := length / 8
-		lStart := lOffset / 8
-		rStart := rOffset / 8
-		if !bytes.Equal(left[lStart:lStart+byteLen], right[rStart:rStart+byteLen]) {
-			return false
-		}
+	if length == 0 {
+		return true
+	}
 
-		// check trailing bits
-		for i := (length / 8) * 8; i < length; i++ {
-			if BitIsSet(left, int(lOffset+i)) != BitIsSet(right, int(rOffset+i)) {
+	lShift, rShift := uint(lOffset&7), uint(rOffset&7)
+	lStart, rStart := int(lOffset>>3), int(rOffset>>3)
+
+	// When both ranges start at the same bit within a byte, compare
+	// the first partial byte, then use memcmp for the aligned interior.
+	if lShift == rShift {
+		if lShift != 0 {
+			firstBits := int64(8 - lShift)
+			if firstBits > length {
+				firstBits = length
+			}
+			mask := byte(((uint16(1) << uint(firstBits)) - 1) << lShift)
+			if (left[lStart]^right[rStart])&mask != 0 {
 				return false
 			}
+			lStart++
+			rStart++
+			length -= firstBits
+		}
+
+		nbytes := int(length >> 3)
+		if !bytes.Equal(left[lStart:lStart+nbytes], right[rStart:rStart+nbytes]) {
+			return false
+		}
+		if remaining := uint(length & 7); remaining != 0 {
+			mask := byte((uint16(1) << remaining) - 1)
+			return (left[lStart+nbytes]^right[rStart+nbytes])&mask == 0
 		}
 		return true
 	}
 
-	lrdr := NewBitmapWordReader(left, int(lOffset), int(length))
-	rrdr := NewBitmapWordReader(right, int(rOffset), int(length))
-
-	nwords := lrdr.Words()
-	for nwords > 0 {
-		nwords--
-		if lrdr.NextWord() != rrdr.NextWord() {
+	// Reading one extra byte, rather than another full word, lets us
+	// process the final 64-bit group without running past either range.
+	// Convert to a canonical little-endian word for big-endian hosts.
+	nbytes := int(length >> 3)
+	i := 0
+	for ; i+8 <= nbytes; i += 8 {
+		lword := toFromLEFunc(endian.Native.Uint64(left[lStart+i:]))
+		rword := toFromLEFunc(endian.Native.Uint64(right[rStart+i:]))
+		if lShift != 0 {
+			lword = lword>>lShift | uint64(left[lStart+i+8])<<(64-lShift)
+		}
+		if rShift != 0 {
+			rword = rword>>rShift | uint64(right[rStart+i+8])<<(64-rShift)
+		}
+		if lword != rword {
 			return false
 		}
 	}
 
-	nbytes := lrdr.TrailingBytes()
-	for nbytes > 0 {
-		nbytes--
-		lbt, _ := lrdr.NextTrailingByte()
-		rbt, _ := rrdr.NextTrailingByte()
-		if lbt != rbt {
+	for ; i < nbytes; i++ {
+		lbyte := left[lStart+i] >> lShift
+		if lShift != 0 {
+			lbyte |= left[lStart+i+1] << (8 - lShift)
+		}
+		rbyte := right[rStart+i] >> rShift
+		if rShift != 0 {
+			rbyte |= right[rStart+i+1] << (8 - rShift)
+		}
+		if lbyte != rbyte {
 			return false
 		}
+	}
+
+	if remaining := uint(length & 7); remaining != 0 {
+		lbyte := left[lStart+i] >> lShift
+		rbyte := right[rStart+i] >> rShift
+		// Only read the following byte when the logical tail crosses it.
+		if lShift+remaining > 8 {
+			lbyte |= left[lStart+i+1] << (8 - lShift)
+		}
+		if rShift+remaining > 8 {
+			rbyte |= right[rStart+i+1] << (8 - rShift)
+		}
+		return (lbyte^rbyte)&byte((uint16(1)<<remaining)-1) == 0
 	}
 	return true
 }

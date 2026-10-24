@@ -197,6 +197,47 @@ func TestRleBatchLevelsPackedWriteErrors(t *testing.T) {
 	}
 }
 
+// Keep error offsets and partial bytes consistent with the previous batch path.
+// The batch path intentionally reports some errors at an earlier count than
+// calling Put for each value, so compare the same APIs here.
+func TestRleBatchLevelsPackedBatchWriteErrors(t *testing.T) {
+	for _, width := range []int{1, 2, 4, 8} {
+		for _, pattern := range []string{"random", "mostly_defined", "repeated", "alternating"} {
+			values := makePackedLevelValues(width, 520, pattern)
+			for _, capacity := range []int{0, 1, 2, 8, 16, 63, 64, 128, 503} {
+				t.Run(fmt.Sprintf("width=%d/%s/capacity=%d", width, pattern, capacity), func(t *testing.T) {
+					beforeOutput, afterOutput := make([]byte, capacity), make([]byte, capacity)
+					previous := NewRleEncoder(NewWriterAtBuffer(beforeOutput), width)
+					current := NewRleEncoder(NewWriterAtBuffer(afterOutput), width)
+					oldCount, oldErr := previousPutBatchLevels(previous, values)
+					newCount, newErr := current.PutBatchLevels(values)
+					if oldCount != newCount || (oldErr != nil) != (newErr != nil) || !bytes.Equal(beforeOutput, afterOutput) {
+						t.Fatalf("previous (%d, %v) vs current (%d, %v), bytes equal: %t", oldCount, oldErr, newCount, newErr, bytes.Equal(beforeOutput, afterOutput))
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRleBatchLevelsPackedInvalidValues(t *testing.T) {
+	// Invalid levels preserve the existing batch writer's behavior, including
+	// negative input, which used to be cast directly to uint64.
+	for _, width := range []int{1, 2, 4, 8} {
+		values := []int16{0, 1, 0, 1, 0, 1, 0, -1, 0, 1, 0, 1, 0, 1, 0, 1024}
+		size := MaxRLEBufferSize(width, len(values)) + MinRLEBufferSize(width) + 32
+		beforeOutput, afterOutput := make([]byte, size), make([]byte, size)
+		previous := NewRleEncoder(NewWriterAtBuffer(beforeOutput), width)
+		current := NewRleEncoder(NewWriterAtBuffer(afterOutput), width)
+		oldCount, oldErr := previousPutBatchLevels(previous, values)
+		newCount, newErr := current.PutBatchLevels(values)
+		if oldCount != newCount || (oldErr != nil) != (newErr != nil) ||
+			!bytes.Equal(beforeOutput[:previous.Flush()], afterOutput[:current.Flush()]) {
+			t.Fatalf("width %d: invalid-level output changed", width)
+		}
+	}
+}
+
 func BenchmarkRleBatchLevelsPacked(b *testing.B) {
 	for _, width := range []int{1, 2, 4, 8, 16} {
 		for _, pattern := range []string{"random", "alternating", "mostly_defined", "repeated"} {

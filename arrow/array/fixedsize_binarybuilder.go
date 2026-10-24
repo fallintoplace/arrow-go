@@ -127,23 +127,25 @@ func (b *FixedSizeBinaryBuilder) AppendValues(v [][]byte, valid []bool) {
 	if len(v) != len(valid) && len(valid) != 0 {
 		panic("len(v) != len(valid) && len(valid) != 0")
 	}
-
 	if len(v) == 0 {
 		return
 	}
 
 	b.Reserve(len(v))
-	for _, vv := range v {
-		switch len(vv) {
+	width := b.dtype.ByteWidth
+	start := b.values.Len()
+	b.values.Advance(len(v) * width)
+	data := b.values.Bytes()[start:]
+	for i, value := range v {
+		switch len(value) {
 		case 0:
-			b.values.Advance(b.dtype.ByteWidth)
-		case b.dtype.ByteWidth:
-			b.values.Append(vv)
+			// Preserve Advance semantics for empty fixed-width slots.
+		case width:
+			copy(data[i*width:], value)
 		default:
-			panic(fmt.Errorf("array: invalid binary length (got=%d, want=%d)", len(vv), b.dtype.ByteWidth))
+			panic(fmt.Errorf("array: invalid binary length (got=%d, want=%d)", len(value), width))
 		}
 	}
-
 	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 

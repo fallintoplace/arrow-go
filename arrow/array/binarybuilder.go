@@ -167,26 +167,31 @@ func (b *BinaryBuilder) AppendValues(v [][]byte, valid []bool) {
 	if len(v) != len(valid) && len(valid) != 0 {
 		panic("len(v) != len(valid) && len(valid) != 0")
 	}
-
 	if len(v) == 0 {
 		return
 	}
 
-	b.Reserve(len(v))
-	b.reserveOffsetCapacity(len(v))
-
-	// Pre-calculate total data size to minimize allocations
 	totalDataSize := 0
-	for _, vv := range v {
-		totalDataSize += len(vv)
+	for _, value := range v {
+		totalDataSize += len(value)
 	}
-	b.ReserveData(totalDataSize)
+	offsetStart, dataStart := b.reserveBulkValues(len(v), totalDataSize)
+	data := b.values.Bytes()
+	pos := dataStart
 
-	for _, vv := range v {
-		b.unsafeAppendNextOffset()
-		b.values.unsafeAppend(vv)
+	if b.offsetByteWidth == arrow.Int32SizeBytes {
+		offsets := arrow.Int32Traits.CastFromBytes(b.offsets.Bytes()[offsetStart:])
+		for i, value := range v {
+			offsets[i] = int32(pos)
+			pos += copy(data[pos:], value)
+		}
+	} else {
+		offsets := arrow.Int64Traits.CastFromBytes(b.offsets.Bytes()[offsetStart:])
+		for i, value := range v {
+			offsets[i] = int64(pos)
+			pos += copy(data[pos:], value)
+		}
 	}
-
 	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 
@@ -197,26 +202,31 @@ func (b *BinaryBuilder) AppendStringValues(v []string, valid []bool) {
 	if len(v) != len(valid) && len(valid) != 0 {
 		panic("len(v) != len(valid) && len(valid) != 0")
 	}
-
 	if len(v) == 0 {
 		return
 	}
 
-	b.Reserve(len(v))
-	b.reserveOffsetCapacity(len(v))
-
-	// Pre-calculate total data size to minimize allocations
 	totalDataSize := 0
-	for _, vv := range v {
-		totalDataSize += len(vv)
+	for _, value := range v {
+		totalDataSize += len(value)
 	}
-	b.ReserveData(totalDataSize)
+	offsetStart, dataStart := b.reserveBulkValues(len(v), totalDataSize)
+	data := b.values.Bytes()
+	pos := dataStart
 
-	for _, vv := range v {
-		b.unsafeAppendNextOffset()
-		b.values.unsafeAppend([]byte(vv))
+	if b.offsetByteWidth == arrow.Int32SizeBytes {
+		offsets := arrow.Int32Traits.CastFromBytes(b.offsets.Bytes()[offsetStart:])
+		for i, value := range v {
+			offsets[i] = int32(pos)
+			pos += copy(data[pos:], value)
+		}
+	} else {
+		offsets := arrow.Int64Traits.CastFromBytes(b.offsets.Bytes()[offsetStart:])
+		for i, value := range v {
+			offsets[i] = int64(pos)
+			pos += copy(data[pos:], value)
+		}
 	}
-
 	b.unsafeAppendBoolsToBitmap(valid, len(v))
 }
 
@@ -277,6 +287,21 @@ func (b *BinaryBuilder) reserveOffsetCapacity(n int) {
 	if b.offsets.Cap() < offsetBytes {
 		b.offsets.resize(offsetBytes)
 	}
+}
+
+// reserveBulkValues reserves space for both buffers and advances them once.
+// The offsets contain one entry per appended value; the final offset is
+// written by newData, as with scalar appends.
+func (b *BinaryBuilder) reserveBulkValues(n, dataSize int) (offsetStart, dataStart int) {
+	b.Reserve(n)
+	b.reserveOffsetCapacity(n)
+	dataStart = b.values.Len()
+	debug.Assert(uint64(dataStart)+uint64(dataSize) <= b.maxCapacity, "exceeded maximum capacity of binary array")
+	b.ReserveData(dataSize)
+	offsetStart = b.offsets.Len() * b.offsetByteWidth
+	b.offsets.Advance(n * b.offsetByteWidth)
+	b.values.Advance(dataSize)
+	return offsetStart, dataStart
 }
 
 // ReserveData ensures there is enough space for appending n bytes

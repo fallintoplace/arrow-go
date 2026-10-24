@@ -1,0 +1,61 @@
+name: Temporary Bulk Builder Comparison
+on:
+  push:
+    branches:
+      - perf/bulk-binary-builders-20261024
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.3'
+          cache: true
+      - name: Benchmark base commit
+        shell: bash
+        run: |
+          git worktree add /tmp/arrow-bulk-base 2440af8a4d1b87f5e424d5c0c5f83959a9aebdb3
+          cp arrow/array/bulk_binary_builders_perf_test.go /tmp/arrow-bulk-base/arrow/array/
+          cd /tmp/arrow-bulk-base
+          GOMAXPROCS=1 go test ./arrow/array -run '^$' -bench '^BenchmarkBulkBinaryBuilders$' -benchmem -benchtime=150ms -count=5 -cpu=1 | tee /tmp/arrow-bulk-before.txt
+      - name: Benchmark optimized commit
+        shell: bash
+        run: |
+          GOMAXPROCS=1 go test ./arrow/array -run '^$' -bench '^BenchmarkBulkBinaryBuilders$' -benchmem -benchtime=150ms -count=5 -cpu=1 | tee /tmp/arrow-bulk-after.txt
+      - name: Compare medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import collections, math, re, statistics
+          def read(path):
+              by_name = collections.defaultdict(list)
+              for line in open(path):
+                  if not line.startswith('BenchmarkBulkBinaryBuilders/'):
+                      continue
+                  name = re.sub(r'-[0-9]+$', '', line.split()[0])
+                  ns = re.search(r'([0-9.]+)\s+ns/op', line)
+                  byt = re.search(r'([0-9]+)\s+B/op', line)
+                  alloc = re.search(r'([0-9]+)\s+allocs/op', line)
+                  if ns and byt and alloc:
+                      by_name[name].append((float(ns.group(1)), int(byt.group(1)), int(alloc.group(1))))
+              return by_name
+          before, after = read('/tmp/arrow-bulk-before.txt'), read('/tmp/arrow-bulk-after.txt')
+          ratios = []
+          print('NAME | BEFORE ns/op | AFTER ns/op | TIME CHANGE | BEFORE B/op | AFTER B/op | BEFORE allocs/op | AFTER allocs/op')
+          for name in sorted(before):
+              if name not in after:
+                  continue
+              a = [statistics.median(row[i] for row in before[name]) for i in range(3)]
+              b = [statistics.median(row[i] for row in after[name]) for i in range(3)]
+              ratios.append(b[0] / a[0])
+              print(f'{name} | {a[0]:.0f} | {b[0]:.0f} | {(b[0]/a[0]-1)*100:+.2f}% | {a[1]:.0f} | {b[1]:.0f} | {a[2]:.0f} | {b[2]:.0f}')
+          if not ratios:
+              raise SystemExit('No matching benchmark cases')
+          print(f'GEOMETRIC MEAN TIME CHANGE: {(math.exp(sum(math.log(r) for r in ratios)/len(ratios))-1)*100:+.2f}% over {len(ratios)} cases')
+          PY

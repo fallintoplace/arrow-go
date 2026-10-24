@@ -64,7 +64,7 @@ func putArrowPlainSpaced[T arrowByteArrayOffset](sink *PooledBufferWriter, value
 
 	nvalues := len(offsets) - 1
 	upperBound := 4*nvalues + int(offsets[nvalues]-offsets[0])
-	if upperBound > plainSpacedMaxReserve {
+	if upperBound > plainSpacedMaxReserve || preferPlainSpacedRuns(validBits, validBitsOffset, nvalues) {
 		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(nvalues), func(pos, length int64) {
 			putArrowPlain(sink, values, offsets[pos:pos+length+1])
 		})

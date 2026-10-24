@@ -188,3 +188,60 @@ func TestPlainSpacedBatchFixedLength(t *testing.T) {
 		}
 	}
 }
+
+// Test the bounded-reservation fallback with a large logical payload.
+func TestPlainSpacedBatchLargeFallback(t *testing.T) {
+	const (
+		rows  = 129
+		width = 65536
+	)
+	data := make([]byte, rows*width)
+	values := make([]parquet.ByteArray, rows)
+	offsets32 := make([]int32, rows+1)
+	offsets64 := make([]int64, rows+1)
+	for i := 0; i <= rows; i++ {
+		offsets32[i] = int32(i * width)
+		offsets64[i] = int64(i * width)
+		if i < rows {
+			values[i] = data[i*width : (i+1)*width]
+			for j := range values[i] {
+				values[i][j] = byte(i + j)
+			}
+		}
+	}
+
+	const validityOffset = 3
+	validity := plainSpacedBatchBitmap(rows, validityOffset, "alternating")
+	selected := make([]parquet.ByteArray, 0, rows)
+	for i := range values {
+		if plainSpacedBatchValid(validity, validityOffset, i) {
+			selected = append(selected, values[i])
+		}
+	}
+	want := NewEncoder(parquet.Types.ByteArray, parquet.Encodings.Plain, false, nil, memory.DefaultAllocator).(*PlainByteArrayEncoder)
+	defer want.Release()
+	want.PutByteArray([]byte("before"))
+	want.Put(selected)
+	want.PutByteArray([]byte("after"))
+	expected := plainSpacedBatchBytes(t, want)
+
+	for _, kind := range []string{"values", "arrow32", "arrow64"} {
+		t.Run(kind, func(t *testing.T) {
+			enc := NewEncoder(parquet.Types.ByteArray, parquet.Encodings.Plain, false, nil, memory.DefaultAllocator).(*PlainByteArrayEncoder)
+			defer enc.Release()
+			enc.PutByteArray([]byte("before"))
+			switch kind {
+			case "values":
+				enc.PutSpaced(values, validity, validityOffset)
+			case "arrow32":
+				enc.PutArrowSpaced(data, offsets32, validity, validityOffset)
+			case "arrow64":
+				enc.PutArrowSpaced64(data, offsets64, validity, validityOffset)
+			}
+			enc.PutByteArray([]byte("after"))
+			if actual := plainSpacedBatchBytes(t, enc); !bytes.Equal(actual, expected) {
+				t.Fatalf("fallback encoding differs: got %d bytes, want %d bytes", len(actual), len(expected))
+			}
+		})
+	}
+}

@@ -35,6 +35,7 @@ import (
 type PlainByteArrayEncoder struct {
 	encoder
 
+	bitSetReader bitutils.SetBitRunReader
 }
 
 // PutByteArray writes out the 4 bytes for the length followed by the data
@@ -72,6 +73,10 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		enc.Put(in)
 		return
 	}
+	if preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
+		enc.putSpacedRuns(in, validBits, validBitsOffset)
+		return
+	}
 	validCount := bitutil.CountSetBits(validBits, int(validBitsOffset), len(in))
 	if validCount == 0 {
 		return
@@ -80,13 +85,6 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		enc.Put(in)
 		return
 	}
-	if preferPlainSpacedRuns(validBits, validBitsOffset, len(in)) {
-		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
-			enc.Put(in[pos : pos+length])
-		})
-		return
-	}
-
 	// Most pages fit within a bounded upper estimate. Reserving once lets us
 	// check individual validity bits without constructing thousands of short
 	// runs for alternating or sparse null patterns.
@@ -100,9 +98,7 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		}
 	}
 	if upperBound > plainSpacedMaxReserve {
-		bitutils.VisitSetBitRunsNoErr(validBits, validBitsOffset, int64(len(in)), func(pos, length int64) {
-			enc.Put(in[pos : pos+length])
-		})
+		enc.putSpacedRuns(in, validBits, validBitsOffset)
 		return
 	}
 
@@ -118,6 +114,22 @@ func (enc *PlainByteArrayEncoder) PutSpaced(in []parquet.ByteArray, validBits []
 		out = out[arrow.Uint32SizeBytes+len(value):]
 	}
 	enc.sink.pos += upperBound - len(out)
+}
+
+// putSpacedRuns preserves the bulk-copy path for long contiguous valid runs.
+func (enc *PlainByteArrayEncoder) putSpacedRuns(in []parquet.ByteArray, validBits []byte, validBitsOffset int64) {
+	if enc.bitSetReader == nil {
+		enc.bitSetReader = bitutils.NewSetBitRunReader(validBits, validBitsOffset, int64(len(in)))
+	} else {
+		enc.bitSetReader.Reset(validBits, validBitsOffset, int64(len(in)))
+	}
+	for {
+		run := enc.bitSetReader.NextRun()
+		if run.Length == 0 {
+			break
+		}
+		enc.Put(in[run.Pos : run.Pos+run.Length])
+	}
 }
 
 // Type returns parquet.Types.ByteArray for the bytearray encoder

@@ -130,16 +130,18 @@ func BenchmarkBitmapUnalignedOps(b *testing.B) {
 			out := make([]byte, int64(nbytes)+2)
 			fillUnalignedBitmapPattern(left, 13579)
 			fillUnalignedBitmapPattern(right, 24680)
-			for _, op := range unalignedBitmapOps {
-				b.Run(fmt.Sprintf("%dB/left%d-right%d-out%d/%s",
-					nbytes, offsets.left, offsets.right, offsets.out, op.name), func(b *testing.B) {
-					b.SetBytes(int64(2 * nbytes))
-					b.ReportAllocs()
-					for i := 0; i < b.N; i++ {
-						op.run(left, right, offsets.left, offsets.right, out, offsets.out, int64(nbytes*8))
-					}
-					bitmapUnalignedBenchmarkSink ^= out[0]
-				})
+			for _, tailBits := range []int64{0, 3} {
+				for _, op := range unalignedBitmapOps {
+					b.Run(fmt.Sprintf("%dB/left%d-right%d-out%d/tail%d/%s",
+						nbytes, offsets.left, offsets.right, offsets.out, tailBits, op.name), func(b *testing.B) {
+						b.SetBytes(int64(2 * nbytes))
+						b.ReportAllocs()
+						for i := 0; i < b.N; i++ {
+							op.run(left, right, offsets.left, offsets.right, out, offsets.out, int64(nbytes*8)-tailBits)
+						}
+						bitmapUnalignedBenchmarkSink ^= out[0]
+					})
+				}
 			}
 		}
 	}

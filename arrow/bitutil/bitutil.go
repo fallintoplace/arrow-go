@@ -92,24 +92,36 @@ func CountSetBits(buf []byte, offset, n int) int {
 		return countSetBitsWithOffset(buf, offset, n)
 	}
 
-	count := 0
+	if n >= uint64SizeBits {
+		count := 0
 
-	uint64Bytes := n / uint64SizeBits * 8
-	for _, v := range bytesToUint64(buf[:uint64Bytes]) {
-		count += bits.OnesCount64(v)
+		uint64Bytes := n / uint64SizeBits * 8
+		for _, v := range bytesToUint64(buf[:uint64Bytes]) {
+			count += bits.OnesCount64(v)
+		}
+
+		for _, v := range buf[uint64Bytes : n/8] {
+			count += bits.OnesCount8(v)
+		}
+
+		// tail bits
+		for i := n &^ 0x7; i < n; i++ {
+			if BitIsSet(buf, i) {
+				count++
+			}
+		}
+
+		return count
 	}
 
-	for _, v := range buf[uint64Bytes : n/8] {
+	// Count short ranges by byte instead of checking trailing bits one by one.
+	count := 0
+	for _, v := range buf[:n/8] {
 		count += bits.OnesCount8(v)
 	}
-
-	// tail bits
-	for i := n &^ 0x7; i < n; i++ {
-		if BitIsSet(buf, i) {
-			count++
-		}
+	if tail := n & 7; tail != 0 {
+		count += bits.OnesCount8(buf[n/8] & byte((1<<tail)-1))
 	}
-
 	return count
 }
 

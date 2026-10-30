@@ -754,10 +754,34 @@ func unalignedBitmapOp(op bitOp, left, right []byte, lOffset, rOffset int64, out
 				rightBytes = rightBytes[8:]
 				outBytes = outBytes[8:]
 			}
-			if remaining := length % 64; remaining != 0 {
-				processed := nwords * 64
-				unalignedBitmapOp(op, left, right, lOffset+processed,
-					rOffset+processed, out, outOffset+processed, remaining)
+			// Complete bytes at the end also avoid the reader/writer path.
+			remaining := length % 64
+			for remaining >= 8 {
+				lbyte := leftBytes[0] >> leftShift
+				if leftShift != 0 {
+					lbyte |= leftBytes[1] << (8 - leftShift)
+				}
+				rbyte := rightBytes[0] >> rightShift
+				if rightShift != 0 {
+					rbyte |= rightBytes[1] << (8 - rightShift)
+				}
+				outBytes[0] = op.opByte(lbyte, rbyte)
+				leftBytes = leftBytes[1:]
+				rightBytes = rightBytes[1:]
+				outBytes = outBytes[1:]
+				remaining -= 8
+			}
+			if remaining != 0 {
+				lbyte := leftBytes[0] >> leftShift
+				if int64(leftShift)+remaining > 8 {
+					lbyte |= leftBytes[1] << (8 - leftShift)
+				}
+				rbyte := rightBytes[0] >> rightShift
+				if int64(rightShift)+remaining > 8 {
+					rbyte |= rightBytes[1] << (8 - rightShift)
+				}
+				mask := byte((1 << uint(remaining)) - 1)
+				outBytes[0] = (outBytes[0] &^ mask) | (op.opByte(lbyte, rbyte) & mask)
 			}
 			return
 		}

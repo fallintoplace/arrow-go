@@ -347,15 +347,11 @@ func (bm *BitmapWordReader) NextTrailingByte() (val byte, validBits int) {
 		// last byte
 		validBits = bm.trailingBits
 		bm.trailingBits = 0
-		rdr := NewBitmapReader(bm.bitmap, bm.offset, validBits)
-		for i := 0; i < validBits; i++ {
-			val >>= 1
-			if rdr.Set() {
-				val |= 0x80
-			}
-			rdr.Next()
+		val = bm.bitmap[0] >> bm.offset
+		if bm.offset+validBits > 8 {
+			val |= bm.bitmap[1] << (8 - bm.offset)
 		}
-		val >>= (8 - validBits)
+		val &= byte((1 << validBits) - 1)
 		return
 	}
 
@@ -457,17 +453,13 @@ func (bm *BitmapWordWriter) PutNextTrailingByte(b byte, validBits int) {
 	} else {
 		debug.Assert(validBits > 0 && validBits < 8, "invalid valid bits in bitmap word writer")
 		debug.Assert(BytesForBits(int64(bm.offset+validBits)) <= int64(len(bm.bitmap)), "writing trailing byte outside of bounds of bitmap")
-		wr := NewBitmapWriter(bm.bitmap, int(bm.offset), validBits)
-		for i := 0; i < validBits; i++ {
-			if b&0x01 != 0 {
-				wr.Set()
-			} else {
-				wr.Clear()
-			}
-			wr.Next()
-			b >>= 1
+		mask := byte((1 << validBits) - 1)
+		firstMask := mask << bm.offset
+		bm.bitmap[0] = (bm.bitmap[0] &^ firstMask) | ((b & mask) << bm.offset)
+		if bm.offset+validBits > 8 {
+			nextMask := mask >> (8 - bm.offset)
+			bm.bitmap[1] = (bm.bitmap[1] &^ nextMask) | ((b & mask) >> (8 - bm.offset))
 		}
-		wr.Finish()
 	}
 }
 

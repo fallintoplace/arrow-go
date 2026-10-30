@@ -106,10 +106,14 @@ func (pflba *PlainFixedLenByteArrayDecoder) Decode(out []parquet.FixedLenByteArr
 		return 0, errors.New("parquet: eof exception")
 	}
 
+	// Advance the input cursor locally to avoid updating decoder state for each value.
+	data := pflba.data
+	width := pflba.typeLen
 	for idx := range out[:max] {
-		out[idx] = pflba.data[:pflba.typeLen]
-		pflba.data = pflba.data[pflba.typeLen:]
+		out[idx] = data[:width]
+		data = data[width:]
 	}
+	pflba.data = data
 
 	pflba.nvals -= max
 	return max, nil

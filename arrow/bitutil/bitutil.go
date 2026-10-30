@@ -103,11 +103,9 @@ func CountSetBits(buf []byte, offset, n int) int {
 		count += bits.OnesCount8(v)
 	}
 
-	// tail bits
-	for i := n &^ 0x7; i < n; i++ {
-		if BitIsSet(buf, i) {
-			count++
-		}
+	// Count the trailing partial byte in one operation.
+	if tail := n & 7; tail != 0 {
+		count += bits.OnesCount8(buf[n/8] & byte((1<<uint(tail))-1))
 	}
 
 	return count
